@@ -19,6 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import path_config
 import canvas_refresh as cr
+from canvas_common import classify_submission as _classify
 
 _paths    = path_config.resolve()
 DEST_ROOT = _paths["coursework_root"]
@@ -27,15 +28,6 @@ _COURSES  = _paths["courses"]
 # switch in early November; a fixed -4 offset silently shifted every date
 # bucket by an hour for the rest of the term.
 BOSTON = ZoneInfo("America/New_York")
-
-# submission_types that indicate a class-session prep assignment (not a deliverable)
-_SESSION_TYPES = {("not_graded",), ("none",)}
-
-# submission_types that require a student action
-_ACTION_TYPES = {
-    "online_upload", "online_quiz", "online_text_entry",
-    "media_recording", "on_paper", "external_tool", "online_url",
-}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -57,16 +49,6 @@ def _count_pages(session_dir: Path) -> int:
         if f.suffix.lower() == ".pdf" and "Notes" not in f.name:
             total += cr.pdf_page_count(f)
     return total
-
-
-def _classify(sub_types: list) -> str:
-    """'session', 'deliverable', or 'ambiguous'."""
-    t = tuple(sorted(sub_types or []))
-    if t in _SESSION_TYPES:
-        return "session"
-    if any(s in _ACTION_TYPES for s in sub_types):
-        return "deliverable"
-    return "ambiguous"
 
 
 def _short_name(full_name: str, abbrev: str) -> str:
@@ -167,11 +149,15 @@ def generate(week_start: datetime | None = None) -> Path:
 
         lines.append("")
 
+    title    = week_start.strftime("Week of %B %-d, %Y")
+    metadata = {"Generated": datetime.now(tz=BOSTON).strftime("%Y-%m-%d %H:%M")}
+    md_text  = "\n".join(lines)
+    cr.write_markdown(out_file.with_suffix(".md"), title, metadata, md_text)
     cr.markdown_to_docx(
-        md_text     = "\n".join(lines),
+        md_text     = md_text,
         output_path = out_file,
-        title       = week_start.strftime("Week of %B %-d, %Y"),
-        metadata    = {"Generated": datetime.now(tz=BOSTON).strftime("%Y-%m-%d %H:%M")},
+        title       = title,
+        metadata    = metadata,
     )
     return out_file
 
@@ -179,4 +165,4 @@ def generate(week_start: datetime | None = None) -> Path:
 if __name__ == "__main__":
     out = generate()
     print(f"\n✅ {out}")
-    print(out.read_text())
+    print(out.with_suffix(".md").read_text())

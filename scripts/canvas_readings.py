@@ -574,34 +574,28 @@ def main():
     course_id = _courses[abbrev]["canvas_id"]
 
     import canvas_refresh as _cr
-    assignments = _cr.canvas_get(f"courses/{course_id}/assignments", {"per_page": 100})
-    assignment = next(
-        (a for a in assignments
-         if a.get("due_at") and _cr.yymmdd(_cr.boston_date(a["due_at"])) == date_str),
-        None
-    )
-    if assignment is None:
-        sys.exit(f"No assignment found for {date_str} {abbrev}")
-
-    html  = assignment.get("description") or ""
-    links = extract_links(html)
+    assignments = _cr.assignments_on(course_id, date_str)
+    if not assignments:
+        sys.exit(f"No class posting found for {date_str} {abbrev}")
 
     if args.list:
-        print(f"\nLinks in {date_str} {abbrev}: {assignment['name']}")
-        for l in links:
-            opt  = " [optional]" if l["optional"] else ""
-            kind = classify(l["href"])
-            new  = _session_filename(date_str, l["title"])
-            print(f"  [{kind}]{opt} {l['title']}")
-            print(f"         → {new}.pdf")
-            print(f"         {l['href']}")
+        for assignment in assignments:
+            links = extract_links(assignment.get("description") or "")
+            print(f"\nLinks in {date_str} {abbrev}: {assignment['name']}")
+            for l in links:
+                opt  = " [optional]" if l["optional"] else ""
+                kind = classify(l["href"])
+                new  = _session_filename(date_str, l["title"])
+                print(f"  [{kind}]{opt} {l['title']}")
+                print(f"         → {new}.pdf")
+                print(f"         {l['href']}")
         return
 
     course_folder = _courses[abbrev].get("folder_path") or _paths["coursework_root"] / abbrev
     session_dir   = course_folder / f"{date_str} {abbrev}"
 
     print(f"\nReading sync: {abbrev} {date_str}")
-    n = sync_reading_links(assignment, session_dir)
+    n = sum(sync_reading_links(a, session_dir) for a in assignments)
     print(f"\n✅ Done — {n} new file(s) saved.")
 
 

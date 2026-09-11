@@ -31,6 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import path_config
+import canvas_common as _cc
 import canvas_refresh as _cr
 from notebooklm.exceptions import ArtifactInProgressTimeoutError
 
@@ -97,7 +98,6 @@ async def _generate(date_str: str, abbrev: str):
     )
     # Exclude PDFs over the page limit, and byte-identical repeats of a reading
     # Canvas attached in two places.
-    import hashlib
     usable, seen = [], {}
     for f in reading_files:
         if f.suffix.lower() == ".pdf":
@@ -105,7 +105,7 @@ async def _generate(date_str: str, abbrev: str):
             if pages > _cr.PDF_PAGE_LIMIT:
                 print(f"  ⚠ Skipping ({pages}p > {_cr.PDF_PAGE_LIMIT}p limit): {f.name}")
                 continue
-        digest = hashlib.md5(f.read_bytes()).hexdigest()
+        digest = _cc.file_md5(f)
         if digest in seen:
             print(f"  – Duplicate of {seen[digest]}, uploading once: {f.name}")
             continue
@@ -122,14 +122,10 @@ async def _generate(date_str: str, abbrev: str):
     # ── Canvas assignment (for discussion questions) ────────────────────────────
     course_id  = COURSE_IDS[abbrev]
     print("Fetching Canvas assignment...", end=" ", flush=True)
-    assignment = None
-    for a in _cr.canvas_get(f"courses/{course_id}/assignments", {"per_page": 100}):
-        if a.get("due_at") and _cr.yymmdd(_cr.boston_date(a["due_at"])) == date_str:
-            assignment = a
-            break
-    print(f"found: {assignment['name']}" if assignment else "not found")
+    assignments = _cr.assignments_on(course_id, date_str)
+    print("found: " + "; ".join(a["name"] for a in assignments) if assignments else "not found")
 
-    if not reading_files and not assignment:
+    if not reading_files and not assignments:
         sys.exit("No readings and no Canvas assignment — nothing to generate from.")
 
     # ── NotebookLM ─────────────────────────────────────────────────────────────
@@ -153,9 +149,9 @@ async def _generate(date_str: str, abbrev: str):
                 print(f"  ↑ Uploading {f.name}...")
                 await client.sources.add_file(nb.id, str(f), wait=True, wait_timeout=180.0)
 
-            if assignment:
-                title = assignment.get("name", f"{session_label} Assignment")
-                desc  = _cr.strip_html(assignment.get("description") or "")
+            for a in assignments:
+                title = a.get("name", f"{session_label} Assignment")
+                desc  = _cr.strip_html(a.get("description") or "")
                 print(f"  + Adding Canvas assignment: {title}")
                 await client.sources.add_text(nb.id, title, desc, wait=True)
 

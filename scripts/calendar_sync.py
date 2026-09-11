@@ -28,6 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import path_config
 import canvas_refresh as cr
+from canvas_common import classify_submission as _classify
 
 _paths   = path_config.resolve()
 _COURSES = _paths["courses"]
@@ -39,24 +40,8 @@ BOSTON = ZoneInfo("America/New_York")
 CALENDAR_NAME = "Canvas Assignments"
 STATE_FILE    = Path.home() / ".canvas_calendar_state.json"
 
-# Submission type classification (same logic as weekly_overview.py)
-_SESSION_TYPES = {("not_graded",), ("none",)}
-_ACTION_TYPES  = {
-    "online_upload", "online_quiz", "online_text_entry",
-    "media_recording", "on_paper", "external_tool", "online_url",
-}
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _classify(sub_types: list) -> str:
-    t = tuple(sorted(sub_types or []))
-    if t in _SESSION_TYPES:
-        return "session"
-    if any(s in _ACTION_TYPES for s in sub_types):
-        return "deliverable"
-    return "ambiguous"
-
 
 def _event_title(name: str, abbrev: str, dt: datetime) -> str:
     time_str = dt.strftime("%-I:%M%p").replace("AM", "am").replace("PM", "pm")

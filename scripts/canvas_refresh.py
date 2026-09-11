@@ -27,16 +27,19 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
+
+# ── Path resolution (tolerates folder renames/moves) ─────────────────────────
+# sys.path first: the sibling imports below only worked before because the
+# script's own folder happens to be sys.path[0] when run directly.
+sys.path.insert(0, str(Path(__file__).parent))
+import path_config
+import ai_config
+import canvas_common
 import canvas_organize
 import canvas_readings
 import weekly_overview
 import calendar_sync
 import participation_tracker
-
-# ── Path resolution (tolerates folder renames/moves) ─────────────────────────
-sys.path.insert(0, str(Path(__file__).parent))
-import path_config
-import ai_config
 _paths = path_config.resolve()
 
 DEST_ROOT    = _paths["coursework_root"]
@@ -230,15 +233,38 @@ def class_number(text: str) -> int | None:
 
 # ── Session discovery ─────────────────────────────────────────────────────────
 
-def get_upcoming_sessions(horizon_days: int) -> list[dict]:
+# Which kinds of Canvas posting get a session folder. Deliverables (quizzes,
+# uploads, papers) do not: they used to get a folder of their own, and when
+# one was due the same day as a class the two shared "YYMMDD ABBREV", took
+# turns overwriting .notes_meta.json, and made the Notes regenerate — and bill
+# — on every run. "ambiguous" stays in so a class posting a professor typed
+# with an odd submission type is not silently dropped.
+SESSION_KINDS = ("session", "ambiguous")
+
+
+def _assignment_sort_key(a: dict):
+    return (a.get("due_at") or "", a.get("id") or 0)
+
+
+def _finish_session(s: dict) -> dict:
+    s["assignments"].sort(key=_assignment_sort_key)
+    s["assignment"] = s["assignments"][0]   # kept for callers that want a label
+    return s
+
+
+def get_upcoming_sessions(horizon_days: int,
+                          kinds: tuple = SESSION_KINDS) -> list[dict]:
     """
-    Return all assignments across all courses with due dates
-    between now and now+horizon_days, sorted by due date.
-    Each entry: {abbrev, course_id, assignment, date_str, due_dt}
+    Return one entry per (course, due date) for class sessions between now
+    and now+horizon_days, sorted by due date.
+
+    Each entry: {abbrev, course_id, date_str, due_dt, assignments, assignment}
+    `assignments` holds every posting due that day, earliest first;
+    `assignment` is the first of them.
     """
     now = datetime.now(tz=BOSTON)
     cutoff = now + timedelta(days=horizon_days)
-    sessions = []
+    sessions: dict[tuple[str, str], dict] = {}
 
     for abbrev, course_id in COURSES.items():
         assignments = canvas_get(f"courses/{course_id}/assignments", {"per_page": 100})
@@ -248,16 +274,68 @@ def get_upcoming_sessions(horizon_days: int) -> list[dict]:
             dt = boston_date(a["due_at"])
             if dt < now or dt > cutoff:
                 continue
-            sessions.append({
-                "abbrev":    abbrev,
-                "course_id": course_id,
-                "assignment": a,
-                "date_str":  yymmdd(dt),
-                "due_dt":    dt,
-            })
+            kind = canvas_common.classify_submission(a.get("submission_types"))
+            if kind not in kinds:
+                subs = "/".join(a.get("submission_types") or [])
+                print(f"    – {abbrev} {yymmdd(dt)}: not a class session, skipping "
+                      f"{kind} '{a.get('name', '')[:50]}' ({subs})")
+                continue
+            key = (abbrev, yymmdd(dt))
+            s = sessions.get(key)
+            if s is None:
+                s = sessions[key] = {
+                    "abbrev":      abbrev,
+                    "course_id":   course_id,
+                    "date_str":    yymmdd(dt),
+                    "due_dt":      dt,
+                    "assignments": [],
+                }
+            s["assignments"].append(a)
+            if dt < s["due_dt"]:
+                s["due_dt"] = dt
 
-    sessions.sort(key=lambda s: s["due_dt"])
-    return sessions
+    return sorted((_finish_session(s) for s in sessions.values()),
+                  key=lambda s: s["due_dt"])
+
+
+def assignments_on(course_id: int, date_str: str,
+                   kinds: tuple = SESSION_KINDS) -> list[dict]:
+    """Every posting for a course due on YYMMDD (Boston), earliest first."""
+    out = []
+    for a in canvas_get(f"courses/{course_id}/assignments", {"per_page": 100}):
+        if not a.get("due_at") or yymmdd(boston_date(a["due_at"])) != date_str:
+            continue
+        if canvas_common.classify_submission(a.get("submission_types")) not in kinds:
+            continue
+        out.append(a)
+    out.sort(key=_assignment_sort_key)
+    return out
+
+
+def build_session(abbrev: str, date_str: str,
+                  kinds: tuple = SESSION_KINDS) -> dict:
+    """
+    The session dict for one specific day — what the on-demand scripts
+    (cheat_sheet.py, podcast_gen.py) need to share code with the scheduled run.
+    `assignment` is None when Canvas has no posting for that day.
+    """
+    course_id = COURSES[abbrev]
+    assignments = assignments_on(course_id, date_str, kinds)
+    return {
+        "abbrev":      abbrev,
+        "course_id":   course_id,
+        "date_str":    date_str,
+        "due_dt":      boston_date(assignments[0]["due_at"]) if assignments else None,
+        "assignments": assignments,
+        "assignment":  assignments[0] if assignments else None,
+    }
+
+
+def _session_assignments(session: dict) -> list[dict]:
+    """Postings for a session; tolerates the older single-`assignment` shape."""
+    if session.get("assignments"):
+        return session["assignments"]
+    return [session["assignment"]] if session.get("assignment") else []
 
 # ── File sync (targeted) ──────────────────────────────────────────────────────
 
@@ -316,14 +394,9 @@ def sync_course_files(course_id: int, abbrev: str, target_date_str: str | None =
     if not target_date_str:
         return
 
-    # Targeted: sync files for the specific session
-    assignments = canvas_get(f"courses/{course_id}/assignments", {"per_page": 100})
-    for a in assignments:
-        if not a.get("due_at"):
-            continue
-        if yymmdd(boston_date(a["due_at"])) != target_date_str:
-            continue
-
+    # Targeted: sync files for the specific session. Only class postings — a
+    # quiz due the same day must not pull its attachments into the class folder.
+    for a in assignments_on(course_id, target_date_str):
         session_dir = course_folder / f"{target_date_str} {abbrev}"
         session_dir.mkdir(parents=True, exist_ok=True)
         cn = class_number(a.get("name", ""))
@@ -480,59 +553,174 @@ def markdown_to_docx(md_text: str, output_path: Path,
     doc.save(str(output_path))
 
 
-# ── Staleness check ───────────────────────────────────────────────────────────
-
-def notes_are_stale(session_dir: Path, abbrev: str, date_str: str,
-                    weekly: bool = False,
-                    canvas_desc_hash: str = "",
-                    skip_prompt_regen: bool = False) -> tuple[bool, str]:
+def write_markdown(md_path: Path, title: str, metadata: dict, md_text: str) -> None:
     """
-    Returns (should_regenerate, reason).
-    Checks: missing Notes file, Canvas description changed, new reading files,
-    prompt file updated since last generation.
-    """
-    # Check .docx first (new format), fall back to .md (old format)
-    notes_file = session_dir / f"{date_str} {abbrev} Notes.docx"
-    if not notes_file.exists():
-        notes_file = session_dir / f"{date_str} {abbrev} Notes.md"
-    if not notes_file.exists():
-        return True, "no Notes file yet"
+    The same document as plain Markdown, next to the .docx.
 
+    GitHub's mobile app renders Markdown but not Word files, so this is what
+    gets read on a phone when the coursework lives in a repo. Written before
+    the .docx so a python-docx failure still leaves the text on disk.
+    """
+    lines = [f"# {title}", ""]
+    for key, val in metadata.items():
+        lines.append(f"**{key}:** {val}  ")
+    lines += ["", md_text.strip(), ""]
+    md_path.write_text("\n".join(lines))
+
+
+# ── Notes metadata / staleness ────────────────────────────────────────────────
+#
+# What was on disk and in Canvas when the Notes were last generated lives in
+# .notes_meta.json, all as content hashes. The previous check compared file
+# mtimes against the Notes file's mtime, which git cannot preserve: after a
+# checkout every file is "new", so a run in CI would have regenerated every
+# Notes document, every day.
+#
+#   {
+#     "assignments": {"<canvas assignment id>": "<md5 of description>[:12]"},
+#     "prompt_hash": "<md5 of master prompt with refinement applied>[:12]",
+#     "readings":    {"<filename>": "<md5>"},
+#     "generated":   "<iso timestamp>",  "canvas": [...], "readings_included": [...], "skipped": [...]
+#   }
+
+def _reading_files(session_dir: Path) -> list[Path]:
+    """Readings in a session folder, largest PDF first (proxy for the main case)."""
+    if not session_dir.exists():
+        return []
+    return sorted(
+        (f for f in session_dir.iterdir()
+         if f.is_file() and f.suffix.lower() in READING_EXTS
+         and "Notes" not in f.name and "(skipped)" not in f.name
+         and not f.name.startswith("~$")),          # Word lock files
+        key=lambda f: (-f.stat().st_size if f.suffix.lower() == ".pdf" else 0, f.name),
+    )
+
+
+def build_master_prompt(abbrev: str) -> str:
+    """Master prompt with the course's refinement injected at [CLASS-SPECIFIC NOTES]."""
+    master = PROMPT_FILE.read_text() if PROMPT_FILE.exists() else ""
+    code = abbrev.replace(" ", "_")
+    refinement = (_COURSES.get(abbrev, {}).get("refinement_prompt")
+                  or path_config.PROMPTS_DIR / f"cheat_sheet_prompt_{code}_refinement.md")
+    if refinement.exists():
+        raw = re.sub(r"<!--.*?-->", "", refinement.read_text(), flags=re.DOTALL).strip()
+        if raw and raw != "# CLASS-SPECIFIC NOTES":
+            master = re.sub(
+                r"\[CLASS-SPECIFIC NOTES.*?\].*",
+                f"[CLASS-SPECIFIC NOTES]\n{raw}",
+                master, flags=re.DOTALL,
+            )
+    return master
+
+
+def _short_md5(text: str) -> str:
+    return hashlib.md5(text.encode()).hexdigest()[:12]
+
+
+def prompt_hash(abbrev: str) -> str:
+    return _short_md5(build_master_prompt(abbrev))
+
+
+def session_hashes(session: dict) -> dict[str, str]:
+    """{assignment id: hash of its description} for every posting in the session."""
+    return {str(a.get("id")): _short_md5(strip_html(a.get("description") or ""))
+            for a in _session_assignments(session)}
+
+
+def readings_fingerprint(session_dir: Path) -> dict[str, str]:
+    return {f.name: canvas_common.file_md5(f) for f in _reading_files(session_dir)}
+
+
+def _read_notes_meta(session_dir: Path) -> dict:
+    meta_file = session_dir / ".notes_meta.json"
+    try:
+        stored = json.loads(meta_file.read_text()) if meta_file.exists() else {}
+    except Exception:
+        return {}
+    # Legacy format held one canvas_hash — whichever posting was generated last.
+    if "assignments" not in stored and "canvas_hash" in stored:
+        stored = {"legacy_canvas_hash": stored["canvas_hash"]}
+    return stored
+
+
+def _write_notes_meta(session_dir: Path, meta: dict) -> None:
+    (session_dir / ".notes_meta.json").write_text(json.dumps(meta, indent=2, sort_keys=True))
+
+
+def _mtime_stale(notes_file: Path, session_dir: Path, abbrev: str,
+                 skip_prompt_regen: bool, check_readings: bool,
+                 check_prompt: bool) -> tuple[bool, str]:
+    """
+    The pre-hash check, kept for Notes generated before fingerprints were
+    recorded. Runs once per legacy folder; the next generation writes hashes.
+    """
     notes_mtime = notes_file.stat().st_mtime
-
-    # Canvas assignment description changed (professor edited the posting)
-    if canvas_desc_hash:
-        meta_file = session_dir / ".notes_meta.json"
-        if meta_file.exists():
-            try:
-                stored = json.loads(meta_file.read_text())
-                if stored.get("canvas_hash", "") != canvas_desc_hash:
-                    return True, "Canvas assignment description changed"
-            except Exception:
-                pass
-
-    # Any reading file newer than Notes file → stale
-    reading_files = [
-        f for f in session_dir.iterdir()
-        if f.is_file()
-        and f.suffix.lower() in READING_EXTS
-        and "Notes" not in f.name
-        and "(skipped)" not in f.name
-    ]
-    for f in reading_files:
-        if f.stat().st_mtime > notes_mtime:
-            return True, f"new reading: {f.name}"
-
-    # Master prompt or per-course refinement prompt updated → stale
-    # (only for future sessions — past sessions are excluded by the caller)
-    if not skip_prompt_regen:
+    if check_readings:
+        for f in _reading_files(session_dir):
+            if f.stat().st_mtime > notes_mtime:
+                return True, f"new reading: {f.name}"
+    if check_prompt and not skip_prompt_regen:
         code = abbrev.replace(" ", "_")
         refinement = (_COURSES.get(abbrev, {}).get("refinement_prompt")
                       or path_config.PROMPTS_DIR / f"cheat_sheet_prompt_{code}_refinement.md")
         for prompt_f in [PROMPT_FILE, refinement]:
-            if prompt_f and prompt_f.exists():
-                if prompt_f.stat().st_mtime > notes_mtime:
-                    return True, f"prompt updated: {prompt_f.name}"
+            if prompt_f and prompt_f.exists() and prompt_f.stat().st_mtime > notes_mtime:
+                return True, f"prompt updated: {prompt_f.name}"
+    return False, "up to date"
+
+
+def notes_are_stale(session_dir: Path, abbrev: str, date_str: str,
+                    canvas_hashes: dict | None = None,
+                    skip_prompt_regen: bool = False) -> tuple[bool, str]:
+    """
+    Returns (should_regenerate, reason).
+
+    Stale when: no Notes .docx; a Canvas posting's description changed; the
+    set of reading files or any file's content changed; or (unless
+    skip_prompt_regen) the master/refinement prompt changed. Nothing here
+    looks at modification times.
+    """
+    notes_file = session_dir / f"{date_str} {abbrev} Notes.docx"
+    if not notes_file.exists():
+        return True, "no Notes file yet"
+
+    meta = _read_notes_meta(session_dir)
+    canvas_hashes = canvas_hashes or {}
+
+    # Canvas assignment description changed (professor edited the posting)
+    stored_hashes = meta.get("assignments")
+    if stored_hashes is None:
+        legacy = meta.get("legacy_canvas_hash")
+        # Exact for the single-posting case; a day that merged two postings
+        # regenerates once and is recorded properly from then on.
+        stored_hashes = {aid: legacy for aid in canvas_hashes} if legacy else {}
+    for aid, h in canvas_hashes.items():
+        if stored_hashes.get(aid) != h:
+            return True, "Canvas assignment description changed"
+
+    # Readings: names and content, not mtimes
+    have_readings = "readings" in meta
+    if have_readings:
+        current = readings_fingerprint(session_dir)
+        stored  = meta["readings"]
+        for name in current:
+            if name not in stored:
+                return True, f"new reading: {name}"
+        for name in stored:
+            if name not in current:
+                return True, f"reading removed: {name}"
+        for name, digest in current.items():
+            if stored[name] != digest:
+                return True, f"reading changed: {name}"
+
+    # Prompt text
+    have_prompt = "prompt_hash" in meta
+    if have_prompt and not skip_prompt_regen and meta["prompt_hash"] != prompt_hash(abbrev):
+        return True, "prompt updated"
+
+    if not (have_readings and have_prompt):
+        return _mtime_stale(notes_file, session_dir, abbrev, skip_prompt_regen,
+                            check_readings=not have_readings, check_prompt=not have_prompt)
 
     return False, "up to date"
 
@@ -541,44 +729,31 @@ def notes_are_stale(session_dir: Path, abbrev: str, date_str: str,
 def generate_notes(session: dict):
     abbrev    = session["abbrev"]
     date_str  = session["date_str"]
-    assignment = session["assignment"]
+    assignments = _session_assignments(session)
     course_folder = (_COURSES.get(abbrev, {}).get("folder_path") or DEST_ROOT / abbrev)
     session_dir = course_folder / f"{date_str} {abbrev}"
     output_file = session_dir / f"{date_str} {abbrev} Notes.docx"
+    md_file     = session_dir / f"{date_str} {abbrev} Notes.md"
 
     session_dir.mkdir(parents=True, exist_ok=True)
 
-    # Sort: largest PDFs first (proxy for "main case"), non-PDFs after
-    reading_files = sorted(
-        (f for f in session_dir.iterdir()
-         if f.is_file() and f.suffix.lower() in READING_EXTS
-         and "Notes" not in f.name and "(skipped)" not in f.name),
-        key=lambda f: (-f.stat().st_size if f.suffix.lower() == ".pdf" else 0, f.name),
-    )
+    reading_files = _reading_files(session_dir)
 
-    # Build prompt
-    master = PROMPT_FILE.read_text() if PROMPT_FILE.exists() else ""
-    code = abbrev.replace(" ", "_")
-    notes_file = (_COURSES.get(abbrev, {}).get("refinement_prompt")
-                  or path_config.PROMPTS_DIR / f"cheat_sheet_prompt_{code}_refinement.md")
-    if notes_file.exists():
-        raw = re.sub(r"<!--.*?-->", "", notes_file.read_text(), flags=re.DOTALL).strip()
-        if raw and raw != "# CLASS-SPECIFIC NOTES":
-            master = re.sub(
-                r"\[CLASS-SPECIFIC NOTES.*?\].*",
-                f"[CLASS-SPECIFIC NOTES]\n{raw}",
-                master, flags=re.DOTALL,
-            )
+    # Build prompt. Two genuine class postings on one day (rare) both go in,
+    # each under its own header, so the Notes cover the whole folder.
+    master = build_master_prompt(abbrev)
 
     canvas_block = ""
-    if assignment:
-        name = assignment.get("name", "")
-        desc = strip_html(assignment.get("description") or "")
-        canvas_block = f"\n\n=== CANVAS ASSIGNMENT POSTING ===\nTitle: {name}\n\n{desc}"
+    for i, a in enumerate(assignments, 1):
+        name = a.get("name", "")
+        desc = strip_html(a.get("description") or "")
+        header = ("=== CANVAS ASSIGNMENT POSTING ===" if len(assignments) == 1
+                  else f"=== CANVAS ASSIGNMENT POSTING ({i} of {len(assignments)}) ===")
+        canvas_block += f"\n\n{header}\nTitle: {name}\n\n{desc}"
 
     prompt_text = master + canvas_block
 
-    if not reading_files and not assignment:
+    if not reading_files and not assignments:
         print(f"    ⚠ Nothing to generate for {date_str} {abbrev} — skipping")
         return
 
@@ -597,7 +772,7 @@ def generate_notes(session: dict):
     unique_files = []
     seen_digests: dict[str, Path] = {}
     for f in reading_files:
-        digest = hashlib.md5(f.read_bytes()).hexdigest()
+        digest = canvas_common.file_md5(f)
         first = seen_digests.get(digest)
         if first is not None:
             print(f"    - Duplicate of {first.name}, sending once: {f.name}")
@@ -677,7 +852,9 @@ def generate_notes(session: dict):
     content.append({"type": "text", "text": prompt_text})
 
     msg = client.messages.create(
-        model=MODEL, max_tokens=8192,
+        # Thinking tokens count against max_tokens on newer models; 8192 was
+        # enough for the answer alone but not for the reasoning in front of it.
+        model=MODEL, max_tokens=16000,
         messages=[{"role": "user", "content": content}],
     )
     if msg.stop_reason == "max_tokens":
@@ -686,33 +863,39 @@ def generate_notes(session: dict):
     print(f"    Tokens: {msg.usage.input_tokens:,} in / {msg.usage.output_tokens:,} out  (~${cost:.3f})")
     result = ai_config.response_text(msg)
 
-    # Save canvas hash for staleness detection on future runs
-    canvas_hash = ""
-    if assignment:
-        canvas_hash = hashlib.md5(
-            strip_html(assignment.get("description") or "").encode()
-        ).hexdigest()[:12]
-    (session_dir / ".notes_meta.json").write_text(json.dumps({"canvas_hash": canvas_hash}))
+    skipped_names = {entry.split(" (")[0] for entry in skipped}
+    included = [f.name for f in reading_files if f.name not in skipped_names]
 
     metadata: dict[str, str] = {
-        "Generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "Generated": datetime.now(tz=BOSTON).strftime("%Y-%m-%d %H:%M"),
     }
-    if assignment:
-        metadata["Canvas"] = assignment["name"]
-    if reading_files:
-        skipped_names = {entry.split(" (")[0] for entry in skipped}
-        included = [f.name for f in reading_files if f.name not in skipped_names]
-        if included:
-            metadata["Readings"] = ", ".join(included)
+    if assignments:
+        metadata["Canvas"] = "; ".join(a.get("name", "") for a in assignments)
+    if included:
+        metadata["Readings"] = ", ".join(included)
     if skipped:
         metadata["Skipped"] = ", ".join(skipped)
 
+    title = notes_heading(date_str, abbrev)
+    write_markdown(md_file, title, metadata, result)
     markdown_to_docx(
         md_text     = result,
         output_path = output_file,
-        title       = notes_heading(date_str, abbrev),
+        title       = title,
         metadata    = metadata,
     )
+
+    # Record what these Notes were generated from, so the next run can tell
+    # whether anything has changed without trusting file timestamps.
+    _write_notes_meta(session_dir, {
+        "assignments":       session_hashes(session),
+        "prompt_hash":       prompt_hash(abbrev),
+        "readings":          readings_fingerprint(session_dir),
+        "generated":         metadata["Generated"],
+        "canvas":            [a.get("name", "") for a in assignments],
+        "readings_included": included,
+        "skipped":           skipped,
+    })
     print(f"    ✅ Generated: {output_file.name}")
 
 # ── Podcast generation (wraps podcast_gen.py) ─────────────────────────────────
@@ -867,15 +1050,14 @@ def run_daily(skip_prompt_regen: bool = False, with_podcast: bool = False,
 
         course_folder = (_COURSES.get(abbrev, {}).get("folder_path") or DEST_ROOT / abbrev)
         session_dir = course_folder / f"{date_str} {abbrev}"
-        n_read = canvas_readings.sync_reading_links(s["assignment"], session_dir)
+        n_read = sum(canvas_readings.sync_reading_links(a, session_dir)
+                     for a in s["assignments"])
         if n_read:
             print(f"    ↓ {n_read} reading(s) saved")
 
-        desc_text = strip_html(s["assignment"].get("description") or "")
-        canvas_hash = hashlib.md5(desc_text.encode()).hexdigest()[:12]
         stale, reason = notes_are_stale(
-            session_dir, abbrev, date_str, weekly=False,
-            canvas_desc_hash=canvas_hash, skip_prompt_regen=skip_prompt_regen,
+            session_dir, abbrev, date_str,
+            canvas_hashes=session_hashes(s), skip_prompt_regen=skip_prompt_regen,
         )
         if stale:
             print(f"    → Regenerating Notes ({reason})")
@@ -945,15 +1127,14 @@ def run_weekly(skip_prompt_regen: bool = False, with_podcast: bool = False):
         # Always sync Canvas folder files + external reading links for sessions in window
         print(f"\n  [{date_str}] {abbrev} — {label}")
         sync_course_files(s["course_id"], abbrev, target_date_str=date_str)
-        n_read = canvas_readings.sync_reading_links(s["assignment"], session_dir)
+        n_read = sum(canvas_readings.sync_reading_links(a, session_dir)
+                     for a in s["assignments"])
         if n_read:
             print(f"    ↓ {n_read} reading(s) saved")
 
-        desc_text = strip_html(s["assignment"].get("description") or "")
-        canvas_hash = hashlib.md5(desc_text.encode()).hexdigest()[:12]
         stale, reason = notes_are_stale(
-            session_dir, abbrev, date_str, weekly=True,
-            canvas_desc_hash=canvas_hash, skip_prompt_regen=skip_prompt_regen,
+            session_dir, abbrev, date_str,
+            canvas_hashes=session_hashes(s), skip_prompt_regen=skip_prompt_regen,
         )
         if stale:
             print(f"    → Regenerating Notes ({reason})")
