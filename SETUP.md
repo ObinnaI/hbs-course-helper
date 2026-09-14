@@ -124,3 +124,13 @@ launchctl unload ~/Library/LaunchAgents/com.canvas-course-helper.*.plist
 
 Still stuck? Open an issue on the repo with the error message — with your
 tokens removed.
+
+---
+
+## Running without your Mac
+
+The daily and weekly jobs can run in GitHub Actions instead, with your Mac only
+copying the results into an iCloud folder when it is awake. See
+[Running in the cloud](README.md#running-in-the-cloud-no-mac-needed) in the
+README — it needs a private GitHub repo for the generated files and the same
+three credentials stored there as repository secrets.

@@ -15,9 +15,11 @@ Works with any Canvas LMS instance (Harvard Business School, Stanford GSB, Whart
 | `canvas_readings.py YYMMDD COURSE` | Download all linked readings for one session (HBSP cases, articles, YouTube stubs). |
 | `canvas_organize.py` | Route files to correct folders (slides to `Slides/`, etc.) and move duplicates to Trash. Runs automatically after every sync. |
 | `weekly_overview.py` | Generate `Overview/YYMMDD Overview.docx` — Mon–Fri breakdown of sessions and submissions for the upcoming week. |
-| `calendar_sync.py` | Sync Canvas assignment deadlines to Apple Calendar ("Canvas Assignments"). Idempotent. |
+| `calendar_sync.py` | Sync Canvas assignment deadlines to Apple Calendar ("Canvas Assignments"). Idempotent. Mac only. |
+| `ics_feed.py` | Write the same deadlines as a subscribable `canvas.ics` feed (what the cloud run publishes). |
 | `participation_tracker.py` | Build/refresh `Participation Tracker.xlsx` — all courses side by side with a live spoke/entered rate per course. |
-| `cheat_sheet.py YYMMDD COURSE` | Generate a case prep notes `.docx` on demand for a specific session. |
+| `path_config.py --discover` | Show the courses Canvas returns and the folder each would get, without creating anything. Run before the first sync. |
+| `cheat_sheet.py YYMMDD COURSE` | Generate case prep notes (`.docx` + `.md`) on demand for a specific session. |
 | `podcast_gen.py YYMMDD COURSE` | Generate a ~30-min NotebookLM audio overview on demand for a specific session. |
 | `update_mcps.py` | Check PyPI for dependency updates and upgrade the venv. Run manually when needed. |
 
@@ -25,11 +27,11 @@ Works with any Canvas LMS instance (Harvard Business School, Stanford GSB, Whart
 
 ## Scheduled jobs
 
-Two jobs run automatically via macOS launchd once set up:
+Two jobs run automatically once set up — on your Mac via launchd (`./setup.sh --schedule`), or in GitHub Actions with the Mac only mirroring the results (see [Running in the cloud](#running-in-the-cloud-no-mac-needed)):
 
 ### Daily at 5pm — `canvas_refresh.py --daily`
 
-1. Discover sessions with due dates in the next 2 calendar days
+1. Discover class sessions with due dates in the next 2 calendar days (quizzes and uploads are deliverables, not sessions — they go to the calendar instead)
 2. Sync Canvas-hosted files for those sessions (files attached in Canvas folders and assignments)
 3. Download externally-linked readings (HBSP cases, articles → PDF, YouTube → stub)
 4. Generate or refresh Notes `.docx` if stale (new files, edited Canvas description, updated prompt)
@@ -62,9 +64,9 @@ For every session in the notes window, the sync automatically downloads all read
 | LinkedIn / social / mailto | Skip silently |
 | `instructure.com` Canvas files | Skip (already handled by the Canvas file sync) |
 
-**Oversized files:** If a PDF exceeds the 50-page limit or the 800k-token context budget, it is downloaded to the session folder but excluded from the AI notes. A `{name} (skipped).txt` stub is written next to it so the exclusion is visible. To force inclusion, raise `PDF_PAGE_LIMIT` / `MAX_PDF_TOKEN_BUDGET` in `scripts/canvas_refresh.py`, delete the Notes file, and re-run — deleting the stub alone does nothing.
+**Oversized files:** If a PDF exceeds the 150-page limit or the 700k-token context budget, it is downloaded to the session folder but excluded from the AI notes. A `{name} (skipped).txt` stub is written next to it so the exclusion is visible. To force inclusion, raise `PDF_PAGE_LIMIT` / `MAX_PDF_TOKEN_BUDGET` in `scripts/canvas_refresh.py`, delete the Notes file, and re-run — deleting the stub alone does nothing.
 
-**File type safety:** If an HBSP download returns a non-PDF (e.g. an Excel exhibit named `.pdf`), the file is automatically renamed to the correct extension (`.docx`, `.xlsx`, etc.) before it reaches the notes generator.
+**File type safety:** If an HBSP download returns a non-PDF (e.g. an Excel exhibit named `.pdf`), the archive is inspected and the file renamed to its real extension (`.xlsx`, `.docx`, `.pptx`) before it reaches the notes generator. Pages that render as a login or paywall screen (or fewer than ~800 characters of text) are skipped rather than saved as a reading; they are retried on the next run.
 
 Debug / preview:
 ```bash
@@ -79,13 +81,15 @@ Debug / preview:
 Claude reads the assigned PDFs and Canvas discussion questions and generates a structured `.docx` with:
 - Verbatim Canvas assignment at the top
 - Case analysis keyed to the discussion questions
-- Saved as `YYMMDD COURSE Notes.docx` in the session folder
+- Saved as `YYMMDD COURSE Notes.docx` in the session folder, with the same content as `YYMMDD COURSE Notes.md` beside it (readable in the GitHub app on a phone)
 
 Notes are regenerated automatically when:
 - The session folder has no Notes file yet
 - New reading files have been added since the last generation
 - The Canvas assignment description changed (professor edited it)
 - The master prompt or course refinement prompt was updated since last generation
+
+All of these are content checks recorded in `.notes_meta.json` (hashes of each posting, each reading, and the prompt) — not file timestamps, which git does not preserve. If a class day has two Canvas postings, both go into one Notes document.
 
 **Prompt customization:** Edit `prompts/cheat_sheet_prompt.md` (master prompt applied to all courses) and/or create `prompts/cheat_sheet_prompt_COURSE_refinement.md` for course-specific instructions. Editing a prompt marks all upcoming Notes as stale so they regenerate on the next run.
 
@@ -101,7 +105,7 @@ Files are routed to canonical locations after every sync. Each file lives in exa
 | PDF / DOCX in a session folder | Stays in `COURSE/YYMMDD COURSE/` |
 | PDF / DOCX at course root | `COURSE/General/` if it's a course-level doc (syllabus, schedule, guide…); otherwise `COURSE/General/Supplemental/` |
 
-Duplicates (same byte size, different location) are moved to the macOS Trash. If sizes differ, a warning is printed and both copies are kept.
+Duplicates — same name **and identical content (MD5)**, within one course — are moved to the macOS Trash, or to `COURSEWORK_ROOT/.trash/` where there is no Trash. Same name, different content: a warning is printed and both copies are kept. Nothing outside the course folders is ever touched.
 
 ---
 
@@ -109,8 +113,8 @@ Duplicates (same byte size, different location) are moved to the macOS Trash. If
 
 `participation_tracker.py` creates/refreshes `Participation Tracker.xlsx` at the Coursework root:
 
-- All courses displayed side by side (one column group per course)
-- Each course has its own color scheme
+- All courses displayed side by side (one column group per course, alphabetical)
+- Each course gets its own color scheme from a six-colour palette
 - **Row 1**: Full course name header
 - **Row 2**: Live participation rate — `spoke / entered` (formula updates as you fill in ratings)
 - **Row 3**: Column labels — Day | Case Title | Rating
@@ -118,7 +122,7 @@ Duplicates (same byte size, different location) are moved to the macOS Trash. If
 
 Rating values: `ok`, `good`, `great`, `x` (didn't speak), or blank (not yet entered). Dropdown validation in every Rating cell. Conditional color-coding: great = green, good = light green, ok = yellow, x = gray.
 
-On refresh, existing ratings are preserved (keyed by course + session date), so Canvas title or date updates don't clobber your entries.
+On refresh, existing ratings are preserved (matched by the course name in the column header + the session date), so Canvas title or date updates — or a new course sorting in front of the others — don't clobber your entries.
 
 ---
 
@@ -142,6 +146,8 @@ On refresh, existing ratings are preserved (keyed by course + session date), so 
 
 **First-time setup:** Create a calendar named exactly `Canvas Assignments` in Apple Calendar (or in iCloud/Google Calendar and let it sync). Then run `calendar_sync.py` once to populate it.
 
+**No Mac? Use the feed instead.** `ics_feed.py` (or `CALENDAR_BACKEND=ics`) writes `canvas.ics` next to `canvas_config.json`: every deliverable as an event with a stable UID, so a moved due date updates the existing event rather than adding one. Host it anywhere a calendar app can fetch a URL — the cloud workflow below publishes it to a secret Gist — and subscribe once in Calendar (File → New Calendar Subscription).
+
 ---
 
 ## Podcast generation
@@ -163,23 +169,24 @@ Prompt templates in `prompts/` are fully editable:
 ```
 Coursework/
   Overview/
-    260831 Overview.docx         ← weekly planning doc
+    260831 Overview.docx         ← weekly planning doc (+ .md)
     260907 Overview.docx
-  LTV/
+  LTV - Launching Tech Ventures/ ← "ABBREV - Full Name" for new courses; any folder name works
     General/
       Slides/                    ← all PPTX files (always here, never in session folders)
       Supplemental/              ← non-session-specific PDFs
     260902 LTV/
-      817002-PDF-ENG.pdf         ← HBSP case (auto-downloaded)
-      The idea maze.pdf          ← article (auto-downloaded, printed to PDF)
-      Beachhead Market (YouTube).txt
+      260902 Rocky Mountain Condiments.pdf   ← HBSP case (auto-downloaded)
+      260902 The idea maze.pdf   ← article (auto-downloaded, printed to PDF)
+      260902 Beachhead Market (YouTube).txt
       260902 LTV Notes.docx
+      260902 LTV Notes.md        ← same notes, readable anywhere Markdown renders
       260902 LTV Podcast.m4a
+      .notes_meta.json           ← what the Notes were generated from (hashes)
     260908 LTV/
-      820008-PDF-ENG.pdf
-      Ginkgo Bio.pdf
-      Ginkgo Bio (skipped).txt   ← token budget exceeded; file present but excluded from notes
-  CFO/
+      260908 Ginkgo Bio.pdf
+      260908 Ginkgo Bio (skipped).txt   ← token budget exceeded; file present but excluded from notes
+  CFO - Corporate Financial Operations/
     ...
   claude/
     scripts/                     ← working copies of all scripts (what launchd runs)
@@ -220,6 +227,8 @@ See [`.env.example`](.env.example) for the annotated template.
 | `ANTHROPIC_API_KEY` | https://console.anthropic.com → Settings → API keys |
 | `COURSEWORK_ROOT` | The folder holding your per-course subfolders, e.g. `~/Desktop/Coursework` |
 
+Every key can also be set as an environment variable, which takes precedence over `.env` — that is how the cloud workflow passes secrets. Optional keys (`CANVAS_CONFIG_FILE`, `CALENDAR_BACKEND`, `PODCAST_MAX_PER_RUN`, `MIRROR_*`) are documented in `.env.example`.
+
 > **An `ANTHROPIC_API_KEY` is not a claude.ai login.** Claude for Education, a
 > Claude Pro subscription, and a claude.ai account are the chat product. This
 > tool uses the developer API, which is billed per token from the Console and
@@ -227,7 +236,9 @@ See [`.env.example`](.env.example) for the annotated template.
 > in the Console, ask about joining it before adding a personal card.
 
 > Courses are auto-discovered from Canvas on the first run. There is no course
-> ID configuration to fill in.
+> ID configuration to fill in. Run `./.venv/bin/python scripts/path_config.py --discover`
+> first to see what will be created; edit `abbrev_overrides`, `ignored_courses`, or a
+> course's `folder_name` in `canvas_config.json` if you want different names.
 
 Setting `COURSEWORK_ROOT` means the scripts run in place from this clone. If
 you leave it unset, they fall back to assuming they live at
@@ -242,8 +253,14 @@ you leave it unset, they fall back to assuming they live at
 # Weekly sync + overview + calendar
 ./.venv/bin/python scripts/canvas_refresh.py --weekly
 
-# Weekly with interactive podcast confirmation
+# Weekly with podcasts (interactive skip-list at a terminal; unattended otherwise)
 ./.venv/bin/python scripts/canvas_refresh.py --weekly --with-podcast
+
+# Only the missing podcasts for the next 7 days, at most 2 this run
+./.venv/bin/python scripts/canvas_refresh.py --podcasts-only --podcast-max 2
+
+# Show which courses Canvas returns and what folders they'd get (creates nothing)
+./.venv/bin/python scripts/path_config.py --discover
 
 # Download readings for a specific session
 ./.venv/bin/python scripts/canvas_readings.py 260902 LTV
@@ -266,6 +283,7 @@ you leave it unset, they fall back to assuming they live at
 # Sync calendar deadlines manually
 ./.venv/bin/python scripts/calendar_sync.py
 ./.venv/bin/python scripts/calendar_sync.py --dry-run   # preview without creating events
+./.venv/bin/python scripts/ics_feed.py                  # write canvas.ics instead (no Mac needed)
 
 # Organize and dedup folders
 ./.venv/bin/python scripts/canvas_organize.py
@@ -282,7 +300,11 @@ you leave it unset, they fall back to assuming they live at
 |------|--------|--------|
 | `--daily` | `canvas_refresh.py` | Sync next 2 days and refresh stale notes |
 | `--weekly` | `canvas_refresh.py` | Full 6-week sync + overview + calendar + tracker |
-| `--with-podcast` | `canvas_refresh.py --weekly` | Also generate podcasts (interactive confirmation) |
+| `--with-podcast` | `canvas_refresh.py` | Also generate podcasts (weekly at a terminal: interactive skip-list; otherwise unattended) |
+| `--podcasts-only` | `canvas_refresh.py` | No sync; just fill in missing podcasts (the Mac's fallback when the cloud couldn't) |
+| `--podcast-days N` | `canvas_refresh.py` | Podcast horizon in days (default 7) |
+| `--podcast-max N` | `canvas_refresh.py` | Cap podcasts per run (default `PODCAST_MAX_PER_RUN`, else no cap) |
+| `--discover` | `path_config.py` | List courses and intended folders without creating them |
 | `--skip-prompt-regen` | `canvas_refresh.py` | Don't mark notes stale just because the prompt file changed |
 | `--list DATE COURSE` | `canvas_readings.py` | Preview reading links without downloading |
 | `--dry-run` | `calendar_sync.py` | Print events that would be created, don't create them |
@@ -291,9 +313,56 @@ you leave it unset, they fall back to assuming they live at
 
 ## Notes on cost
 
-Notes generation calls the Claude API. A typical session with 3–4 PDFs costs $0.30–$0.80 depending on reading length. The daily run only regenerates notes that are actually stale, so costs are low after the initial setup run.
+Notes generation calls the Claude API. A typical session with 3–4 PDFs costs roughly $0.20–$0.60 depending on reading length. The daily run only regenerates notes that are actually stale (by content hash, so a fresh checkout does not trigger a rebuild), so costs are low after the initial setup run.
 
-The model and its per-token prices live in [`scripts/ai_config.py`](scripts/ai_config.py) — one place to change both, so the printed cost estimate stays honest. Default is `claude-sonnet-4-6`; swap in `claude-haiku-4-5` to cut cost or `claude-opus-5` for harder analytical courses.
+The model and its per-token prices live in [`scripts/ai_config.py`](scripts/ai_config.py) — one place to change both, so the printed cost estimate stays honest. Default is `claude-sonnet-5` (a third cheaper per token than Sonnet 4.6); swap in `claude-haiku-4-5` to cut cost or `claude-opus-5` for harder analytical courses.
+
+---
+
+## Running in the cloud (no Mac needed)
+
+Everything except two Mac-only pieces (Calendar.app and the NotebookLM browser login) can run in a GitHub Actions job on a schedule, committing its output to a **private data repo**. Your Mac then only *mirrors* that repo into a local or iCloud folder when it happens to be awake — and fills in podcasts if the cloud's NotebookLM login has expired.
+
+**Shape**
+
+```
+ObinnaI/hbs-course-helper   public fork — the code (this repo)
+ObinnaI/hbs-coursework      private — the workflow + every generated file
+~/hbs-coursework            clone of the data repo on the Mac (outside iCloud)
+~/Library/…/2026 HBS/Classes   iCloud folder the mirror job copies into
+```
+
+The workflow lives in the *data* repo: forks have scheduled workflows off by default and public repos lose schedules after 60 idle days, while the data repo gets a commit every run. It checks out this code repo at `main` and runs `canvas_refresh.py` with:
+
+| Variable | Meaning |
+|---|---|
+| `COURSEWORK_ROOT=$GITHUB_WORKSPACE` | the data repo checkout *is* the coursework folder |
+| `CANVAS_CONFIG_FILE=…/claude/canvas_config.json` | config persists in the data repo, not the throwaway code checkout |
+| `CALENDAR_BACKEND=ics` | write `claude/canvas.ics`; a later step publishes it to a secret Gist |
+| `NOTEBOOKLM_AUTH_JSON` (secret) | the contents of `~/.notebooklm/profiles/default/storage_state.json` after `notebooklm login` |
+
+Secrets: `CANVAS_API_TOKEN`, `ANTHROPIC_API_KEY`, `GIST_TOKEN` (a classic PAT with only the `gist` scope), `NOTEBOOKLM_AUTH_JSON`. Variables: `CANVAS_BASE_URL`, `GIST_ID`, `PODCAST_MAX_PER_RUN`. The full workflow is in the data repo's `.github/workflows/refresh.yml`.
+
+**Bootstrap once, locally**, so the first cloud run finds the folder names you want:
+
+```bash
+./.venv/bin/python scripts/path_config.py --discover      # with COURSEWORK_ROOT / CANVAS_CONFIG_FILE pointing at ~/hbs-coursework
+# edit ~/hbs-coursework/claude/canvas_config.json (abbrev_overrides, ignored_courses, folder_name), re-run, then commit and push
+gh -R ObinnaI/hbs-coursework workflow run refresh.yml -f mode=daily -f podcasts=false
+```
+
+**Podcasts** run in the cloud with the stored login. Google expires that cookie every few weeks; when it does the job logs a warning and writes `claude/podcast_status.json`, the Mac mirror job generates the missing episodes with its own login, and you refresh the secret when convenient:
+
+```bash
+./.venv/bin/notebooklm login
+gh -R ObinnaI/hbs-coursework secret set NOTEBOOKLM_AUTH_JSON < ~/.notebooklm/profiles/default/storage_state.json
+```
+
+**Mac mirror** — `./setup.sh --mirror` installs a launchd job that every 30 minutes (and on login) pushes any ratings you entered in the iCloud copy of the tracker, pulls, rsyncs the clone into `MIRROR_DEST` without deleting anything, and runs the podcast fallback. Log: `~/Library/Logs/hbs-mirror.log`. If it reports `Operation not permitted` on the iCloud path, grant Full Disk Access to `/bin/bash` in System Settings → Privacy & Security.
+
+**Calendar** — subscribe once (Calendar → File → New Calendar Subscription, location iCloud, refresh hourly) to `https://gist.githubusercontent.com/<user>/<GIST_ID>/raw/canvas.ics`. A secret Gist is unlisted, not private: anyone with the URL can read assignment titles.
+
+**Size** — a term's podcasts are ~1.2 GB and everything else a few hundred MB, all well under GitHub's per-file limits. Start a new data repo each term.
 
 ---
 

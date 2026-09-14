@@ -32,7 +32,8 @@ import path_config  # noqa: E402  (must follow the environment setup above)
 
 # Belt and braces for versions of path_config that predate CANVAS_CONFIG_FILE.
 path_config.CONFIG_FILE = _TMP / "canvas_config.json"
-path_config._find_env_file = lambda cached=None: None
+path_config._find_env_file_real = path_config._find_env_file   # for its own test
+path_config._find_env_file = lambda *a, **k: None
 
 
 @pytest.fixture

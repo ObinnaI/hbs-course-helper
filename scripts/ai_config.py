@@ -9,9 +9,11 @@ Prices are USD per million tokens, from https://claude.com/pricing.
 """
 
 # Sonnet is the default: it reads case PDFs well and keeps a term's worth of
-# notes in the tens of dollars. Swap to "claude-opus-5" (5.00 / 25.00) for
-# harder analytical courses, or "claude-haiku-4-5" (1.00 / 5.00) to cut cost.
-MODEL = "claude-sonnet-4-6"
+# notes in the tens of dollars. Sonnet 5 is a third cheaper per token than
+# Sonnet 4.6 and reasons before answering, so it's the better default. Swap to
+# "claude-opus-5" (5.00 / 25.00) for harder analytical courses, or
+# "claude-haiku-4-5" (1.00 / 5.00) to cut cost further.
+MODEL = "claude-sonnet-5"
 
 PRICES_PER_MTOK = {
     "claude-opus-5":     (5.00, 25.00),

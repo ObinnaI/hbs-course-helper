@@ -7,6 +7,9 @@
 # Generated config and state
 canvas_config.json
 .notes_meta.json
+podcast_status.json
+ics_state.json
+canvas.ics
 
 # Logs from the scheduled runs
 *.log

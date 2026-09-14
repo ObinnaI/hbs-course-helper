@@ -19,6 +19,7 @@ Also called from canvas_refresh.py --daily and --weekly.
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone, timedelta
@@ -95,6 +96,11 @@ end tell
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def run(dry_run: bool = False) -> None:
+    if not dry_run and shutil.which("osascript") is None:
+        print("  Calendar sync skipped: Apple Calendar (osascript) is not available here. "
+              "Set CALENDAR_BACKEND=ics for a subscribable feed instead.")
+        return
+
     state    = _load_state()
     created  = skipped = already = errors = 0
     ambiguous_found: list[tuple] = []

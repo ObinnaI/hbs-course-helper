@@ -8,14 +8,26 @@ scripts will still resolve correctly.
 Courses are auto-discovered from Canvas API on first run and cached for
 24 hours in canvas_config.json — no manual course ID configuration needed.
 
-Required .env keys:
+Required .env keys (environment variables take precedence, so a CI runner
+can supply them as secrets with no .env at all):
     CANVAS_API_TOKEN  — Canvas personal access token
     CANVAS_BASE_URL   — Your Canvas domain, e.g. https://yourschool.instructure.com
                         (also accepts CANVAS_API_URL with /api/v1 appended)
     ANTHROPIC_API_KEY — For AI notes generation
 
-Results are cached in claude/canvas_config.json and updated when stale.
+Optional:
+    COURSEWORK_ROOT    — folder holding the course folders (default: parent of
+                         this checkout, i.e. Coursework/ when installed as
+                         Coursework/claude/scripts/)
+    CANVAS_CONFIG_FILE — where canvas_config.json lives (default: next to this
+                         checkout). Point it inside COURSEWORK_ROOT when the
+                         coursework is what persists between runs.
+
+Results are cached in canvas_config.json and updated when stale.
 If anything has moved or changed, a one-line notice is printed; silent otherwise.
+
+Bootstrap / check what would happen, without creating any folders:
+    python3 path_config.py --discover
 
 Usage in other scripts:
     import sys
@@ -43,6 +55,28 @@ CLAUDE_DIR      = SCRIPTS_DIR.parent                    # claude/          (or r
 PROMPTS_DIR     = CLAUDE_DIR / "prompts"                # claude/prompts/
 
 
+def _early_env(key: str) -> str:
+    """
+    A setting needed before the full .env discovery below (which needs a root
+    to search): the environment first, then a plain key=value scan of the
+    .env next to this checkout or one level up.
+    """
+    raw = os.getenv(key, "")
+    if raw:
+        return raw
+    for candidate in (CLAUDE_DIR / ".env", CLAUDE_DIR.parent / ".env"):
+        try:
+            if not candidate.exists():
+                continue
+            for line in candidate.read_text().splitlines():
+                k, sep, v = line.strip().partition("=")
+                if sep and k.strip() == key:
+                    return v.strip().strip('"').strip("'")
+        except Exception:
+            continue
+    return ""
+
+
 def _coursework_root() -> Path:
     """
     Where the course folders live.
@@ -52,29 +86,24 @@ def _coursework_root() -> Path:
     COURSEWORK_ROOT (env var, or a line in .env) points them at the folder
     directly, so a git clone can run in place with no second copy to keep
     in sync.
-
-    Read before the full .env discovery below, which needs a root to search.
     """
-    raw = os.getenv("COURSEWORK_ROOT", "")
-    if not raw:
-        for candidate in (CLAUDE_DIR / ".env", CLAUDE_DIR.parent / ".env"):
-            try:
-                if not candidate.exists():
-                    continue
-                for line in candidate.read_text().splitlines():
-                    line = line.strip()
-                    if line.startswith("COURSEWORK_ROOT") and "=" in line:
-                        raw = line.partition("=")[2].strip().strip('"').strip("'")
-                        break
-            except Exception:
-                continue
-            if raw:
-                break
+    raw = _early_env("COURSEWORK_ROOT")
     return Path(raw).expanduser().resolve() if raw else CLAUDE_DIR.parent
 
 
+def _config_file() -> Path:
+    """
+    canvas_config.json holds the course list and per-course folder names. It
+    defaults to sitting next to this checkout, but when the scripts run from
+    a throwaway checkout (CI) the coursework folder is the only thing that
+    persists, so CANVAS_CONFIG_FILE can move it in there.
+    """
+    raw = _early_env("CANVAS_CONFIG_FILE")
+    return Path(raw).expanduser().resolve() if raw else CLAUDE_DIR / "canvas_config.json"
+
+
 COURSEWORK_ROOT = _coursework_root()
-CONFIG_FILE     = CLAUDE_DIR / "canvas_config.json"
+CONFIG_FILE     = _config_file()
 MASTER_PROMPT   = PROMPTS_DIR / "cheat_sheet_prompt.md"
 
 # ── Populated by resolve() — do not edit directly ────────────────────────────
@@ -96,6 +125,7 @@ def _load_config() -> dict:
 
 
 def _save_config(cfg: dict):
+    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
 
 # ── .env parsing ──────────────────────────────────────────────────────────────
@@ -129,20 +159,13 @@ def _get_canvas_base(env: dict[str, str]) -> str:
 
 # ── .env file discovery ───────────────────────────────────────────────────────
 
-def _find_env_file(cached: "str | None" = None) -> "Path | None":
-    """Scan for a .env file containing CANVAS_API_TOKEN."""
-    candidates: list[Path] = []
-    if cached:
-        candidates.append(Path(cached))
-    candidates += [
-        COURSEWORK_ROOT / ".env",
-        CLAUDE_DIR / ".env",
-        Path.home() / "repos" / "hbs-course-helper" / ".env",
-        Path.home() / ".env",
-    ]
-    candidates += sorted(Path.home().glob("repos/*/.env"))
-
-    for p in candidates:
+def _find_env_file() -> "Path | None":
+    """
+    The .env file containing CANVAS_API_TOKEN: next to the coursework, or
+    next to this checkout. Nowhere else — a scan of ~/repos/*/.env and ~/.env
+    used to be able to pick up another project's credentials.
+    """
+    for p in (COURSEWORK_ROOT / ".env", CLAUDE_DIR / ".env"):
         try:
             if p.exists() and "CANVAS_API_TOKEN" in p.read_text():
                 return p.resolve()
@@ -343,16 +366,20 @@ def _find_course_folder(abbrev: str, cached: "str | None" = None) -> "str | None
     Priority: cached name → exact match → case-insensitive → fuzzy word match.
     Returns the folder name (not full path), or None if not found.
     """
+    # Not courses: the scripts folder and the weekly overview folder. Checked
+    # case-insensitively because the exact-match probe below runs on a
+    # case-insensitive filesystem on macOS.
+    exclude = {"claude", "overview"}
+
     for name in filter(None, [cached, abbrev]):
-        if (COURSEWORK_ROOT / name).is_dir():
+        if name.lower() not in exclude and (COURSEWORK_ROOT / name).is_dir():
             return name
 
-    exclude = {"claude"}
     abbrev_lower = abbrev.lower().replace(" ", "")
     abbrev_words = abbrev.lower().split()
 
     for d in COURSEWORK_ROOT.iterdir():
-        if not d.is_dir() or d.name in exclude or d.name.startswith("."):
+        if not d.is_dir() or d.name.lower() in exclude or d.name.startswith("."):
             continue
         name = d.name
         if name.lower().replace(" ", "") == abbrev_lower:
@@ -362,15 +389,35 @@ def _find_course_folder(abbrev: str, cached: "str | None" = None) -> "str | None
 
     return None
 
+
+def _folder_safe(name: str) -> str:
+    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", name).strip(". ")
+
+
+def default_folder_name(abbrev: str, full_name: "str | None") -> str:
+    """
+    "INVS - Seminar in Investing": the code so scripts and the session
+    folders ("260915 INVS") line up, the name so a human can find it.
+    """
+    if full_name and full_name.strip() and full_name.strip() != abbrev:
+        return _folder_safe(f"{abbrev} - {full_name.strip()}")
+    return abbrev
+
 # ── Main resolution function ──────────────────────────────────────────────────
 
-def resolve() -> dict:
+_ENV_OVERRIDES = ("CANVAS_API_TOKEN", "CANVAS_BASE_URL", "CANVAS_API_URL")
+
+
+def resolve(create_folders: bool = True) -> dict:
     """
     Resolve all paths, auto-discover Canvas courses if the cache is stale,
     and update canvas_config.json when anything changes.
 
     Populates the module-level CANVAS_IDS, COURSE_NAMES, and CANVAS_BASE
     dicts/strings so existing callers holding references see the updates.
+
+    create_folders=False only reports; --discover uses it to show what the
+    first real run would do.
 
     Returns:
         {
@@ -396,9 +443,13 @@ def resolve() -> dict:
     changed = False
 
     # ── .env file ─────────────────────────────────────────────────────────────
-    env_file = _find_env_file(cfg.get("env_file"))
+    # With the token in the environment (CI secrets) there may be no .env at
+    # all; don't warn about that, and don't record a None that a Mac run would
+    # flip back on its next commit.
+    from_env = bool(os.getenv("CANVAS_API_TOKEN"))
+    env_file = _find_env_file()
     new_env_str = str(env_file) if env_file else None
-    if new_env_str != cfg.get("env_file"):
+    if not from_env and new_env_str != cfg.get("env_file"):
         if env_file:
             print(f"  [paths] env_file → {env_file}")
         else:
@@ -408,6 +459,9 @@ def resolve() -> dict:
 
     # ── Canvas base URL ────────────────────────────────────────────────────────
     env_vars = _read_env_file(env_file)
+    for key in _ENV_OVERRIDES:            # environment beats the file
+        if os.getenv(key):
+            env_vars[key] = os.getenv(key)
     canvas_base = _get_canvas_base(env_vars)
     token = env_vars.get("CANVAS_API_TOKEN", "")
 
@@ -456,24 +510,30 @@ def resolve() -> dict:
             cfg["courses"][abbrev]["folder_name"] = folder_name
             changed = True
 
+        full_name = entry.get("full_name", abbrev)
+
         # A course with no folder used to be dropped from every loop in
         # canvas_refresh, which meant it never got a folder created and so could
         # never resolve on a later run either — a silent, permanent dead end.
-        # Create the folder so the course joins the sync from here on.
+        # Create the folder so the course joins the sync from here on. A name
+        # already chosen in the config (seeded by hand, or by an earlier run
+        # whose empty folder git did not keep) wins over the derived default.
         if folder_name is None:
-            new_dir = COURSEWORK_ROOT / abbrev
-            try:
-                new_dir.mkdir(parents=True, exist_ok=True)
-                folder_name = abbrev
-                cfg["courses"][abbrev]["folder_name"] = folder_name
-                changed = True
-                print(f"  [paths] {abbrev}: created course folder {new_dir}")
-                print(f"  [paths]   (add {canvas_id} to \"ignored_courses\" in "
-                      f"canvas_config.json to skip this course instead)")
-            except OSError as e:
-                print(f"  [paths] WARNING: could not create folder for {abbrev}: {e}")
-
-        full_name = entry.get("full_name", abbrev)
+            want = cached_name or default_folder_name(abbrev, full_name)
+            new_dir = COURSEWORK_ROOT / want
+            if not create_folders:
+                print(f"  [paths] {abbrev}: would create course folder {new_dir}")
+            else:
+                try:
+                    new_dir.mkdir(parents=True, exist_ok=True)
+                    folder_name = want
+                    cfg["courses"][abbrev]["folder_name"] = folder_name
+                    changed = True
+                    print(f"  [paths] {abbrev}: created course folder {new_dir}")
+                    print(f"  [paths]   (add {canvas_id} to \"ignored_courses\" in "
+                          f"canvas_config.json to skip this course instead)")
+                except OSError as e:
+                    print(f"  [paths] WARNING: could not create folder for {abbrev}: {e}")
         code = abbrev.replace(" ", "_")
         refinement = PROMPTS_DIR / f"cheat_sheet_prompt_{code}_refinement.md"
         folder_path = (COURSEWORK_ROOT / folder_name) if folder_name else None
@@ -503,3 +563,40 @@ def resolve() -> dict:
         "master_prompt":   MASTER_PROMPT,
         "courses":         courses,
     }
+
+
+# ── Bootstrap helper ──────────────────────────────────────────────────────────
+
+def _discover_cli() -> None:
+    """
+    Show the courses Canvas returns and the folder each would get, creating
+    nothing. Run it, edit abbrev_overrides / ignored_courses / folder_name in
+    canvas_config.json, run it again, then do the first real sync.
+    """
+    paths = resolve(create_folders=False)
+    print(f"\n  Coursework root: {COURSEWORK_ROOT}")
+    print(f"  Config file:     {CONFIG_FILE}\n")
+    if not paths["courses"]:
+        print("  No courses. Check CANVAS_API_TOKEN / CANVAS_BASE_URL.\n")
+        return
+    rows = [("ABBREV", "CANVAS ID", "FOLDER", "FULL NAME")]
+    for abbrev, info in sorted(paths["courses"].items()):
+        folder = info["folder_name"] or f"(would create) {default_folder_name(abbrev, info['full_name'])}"
+        rows.append((abbrev, str(info["canvas_id"]), folder, info["full_name"]))
+    widths = [max(len(r[i]) for r in rows) for i in range(4)]
+    for r in rows:
+        print("  " + "  ".join(c.ljust(w) for c, w in zip(r, widths)))
+    print(f"""
+  To change an abbreviation:  "abbrev_overrides": {{"<canvas id>": "INVS"}}
+  To skip a course:           "ignored_courses":  [<canvas id>]
+  To pick a folder name:      set "folder_name" on the course entry
+  ...in {CONFIG_FILE}, then run this again.
+""")
+
+
+if __name__ == "__main__":
+    import sys
+    if "--discover" in sys.argv:
+        _discover_cli()
+    else:
+        print(__doc__)

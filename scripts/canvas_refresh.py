@@ -65,7 +65,6 @@ SLIDE_EXTS   = {".pptx", ".ppt"}   # always routed to General/Slides/
 # than guessed from file size: the old 200k-tokens-per-MB rule over-counted a
 # scanned case by ~8x (a 23-page case measures 45k, was estimated at 372k) and
 # silently dropped readings that fit with room to spare.
-PDF_TOKENS_PER_MB = 200_000          # kept for callers; no longer used here
 MAX_PDF_TOKEN_BUDGET = 700_000       # Sonnet holds 1M; leave room for prompt + output
 PDF_PAGE_LIMIT = 150  # a genuinely outsized document, not a normal long case
 
@@ -898,14 +897,59 @@ def generate_notes(session: dict):
     })
     print(f"    ✅ Generated: {output_file.name}")
 
+# ── Calendar ──────────────────────────────────────────────────────────────────
+
+def _sync_calendar() -> None:
+    """
+    Apple Calendar via AppleScript on a Mac; a subscribable .ics feed anywhere
+    else, or wherever CALENDAR_BACKEND=ics says so. The feed is what a run
+    with no Mac can produce, and a subscribed calendar updates itself.
+    """
+    backend = cfg("CALENDAR_BACKEND") or ("apple" if sys.platform == "darwin" else "ics")
+    if backend == "apple":
+        calendar_sync.run()
+    elif backend == "ics":
+        import ics_feed
+        out = ics_feed.write()
+        print(f"  ICS feed written: {out}")
+    else:
+        print(f"  Calendar sync skipped (CALENDAR_BACKEND={backend})")
+
+
 # ── Podcast generation (wraps podcast_gen.py) ─────────────────────────────────
+
+# Set the first time NotebookLM rejects the stored login this run. Every later
+# episode is skipped rather than failing the same way five more times.
+_PODCAST_AUTH_FAILED: "str | None" = None
+
+
+def _is_auth_error(e: BaseException) -> bool:
+    names = {c.__name__ for c in type(e).__mro__}
+    if names & {"AuthError", "AuthenticationError", "ConfigurationError"}:
+        return True
+    return isinstance(e, FileNotFoundError) and "storage_state" in str(e)
+
+
+def _relogin_help() -> str:
+    repo = os.getenv("GITHUB_REPOSITORY", "<owner>/<data repo>")
+    return (
+        "    ✗ NotebookLM login is missing or expired. On the Mac, run:\n"
+        "        cd ~/hbs-course-helper && ./.venv/bin/notebooklm login\n"
+        "      and, if podcasts run in the cloud, upload the fresh login state:\n"
+        f"        gh -R {repo} secret set NOTEBOOKLM_AUTH_JSON "
+        "< ~/.notebooklm/profiles/default/storage_state.json\n"
+        "      Remaining podcasts are skipped this run and picked up by the next one."
+    )
+
 
 def generate_podcast_for_session(session: dict):
     """
     Generate a NotebookLM podcast for a session (synchronous wrapper).
     Skipped if the .m4a already exists.
-    Requires notebooklm-py and a valid ~/.notebooklm session.
+    Requires notebooklm-py and a valid NotebookLM login (~/.notebooklm, or
+    NOTEBOOKLM_AUTH_JSON in the environment).
     """
+    global _PODCAST_AUTH_FAILED
     import asyncio
     abbrev    = session["abbrev"]
     date_str  = session["date_str"]
@@ -916,11 +960,14 @@ def generate_podcast_for_session(session: dict):
     if podcast_file.exists():
         print(f"    ✓ Podcast exists: {podcast_file.name}")
         return
+    if _PODCAST_AUTH_FAILED:
+        print("    – skipped: NotebookLM login failed earlier in this run")
+        return
 
     try:
         import podcast_gen as _pg
-    except ImportError:
-        print("    ⚠ podcast_gen.py not found on sys.path — skipping podcast")
+    except ImportError as e:
+        print(f"    ⚠ podcast support unavailable ({e}) — skipping podcast")
         return
     # NotebookLM intermittently times out on a single RPC ("Request timed out
     # calling GET_NOTEBOOK") and one such blip cost a whole episode. A second
@@ -931,11 +978,44 @@ def generate_podcast_for_session(session: dict):
             asyncio.run(_pg._generate(date_str, abbrev))
             return
         except Exception as e:
+            if _is_auth_error(e):
+                _PODCAST_AUTH_FAILED = str(e) or type(e).__name__
+                print(_relogin_help())
+                return
             if attempt == 1:
                 print(f"    Podcast attempt failed ({e}) — retrying once...")
                 time.sleep(20)
             else:
                 print(f"    ✗ Podcast generation failed: {e}")
+
+
+def _podcast_path(s: dict) -> Path:
+    folder = (_COURSES.get(s["abbrev"], {}).get("folder_path") or DEST_ROOT / s["abbrev"])
+    return folder / f"{s['date_str']} {s['abbrev']}" / f"{s['date_str']} {s['abbrev']} Podcast.m4a"
+
+
+def _write_podcast_status(pending: list[dict]) -> None:
+    """
+    Leave a note for whoever runs next. The Mac mirror job reads it to decide
+    whether to generate the episodes a cloud run could not; a CI step reads
+    the GITHUB_OUTPUT line to raise a warning.
+    """
+    status = {
+        "auth_ok":    _PODCAST_AUTH_FAILED is None,
+        "error":      _PODCAST_AUTH_FAILED,
+        "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "pending":    [f"{s['date_str']} {s['abbrev']}" for s in pending],
+    }
+    path = path_config.CONFIG_FILE.parent / "podcast_status.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(status, indent=2))
+    except OSError as e:
+        print(f"  ⚠ could not write {path.name}: {e}")
+    gh_out = os.getenv("GITHUB_OUTPUT")
+    if gh_out:
+        with open(gh_out, "a") as fh:
+            fh.write(f"podcasts_skipped={'true' if _PODCAST_AUTH_FAILED else 'false'}\n")
 
 
 # ── Connectivity ──────────────────────────────────────────────────────────────
@@ -970,7 +1050,8 @@ def wait_for_canvas(attempts: int = 5, delay: int = 30) -> bool:
 
 # ── Modes ─────────────────────────────────────────────────────────────────────
 
-def run_podcast_pass(horizon_days: int = PODCAST_HORIZON_DAYS):
+def run_podcast_pass(horizon_days: int = PODCAST_HORIZON_DAYS,
+                     max_per_run: int = 0):
     """
     Fill in missing podcasts across the whole horizon, not just the sync window.
 
@@ -979,50 +1060,48 @@ def run_podcast_pass(horizon_days: int = PODCAST_HORIZON_DAYS):
     backlog and later ones do only what is new. Each episode takes 5-15 minutes
     and they render one at a time, so a full backlog is a long unattended job -
     which is why this sits at the end, after everything else has been written.
+    max_per_run caps one run (a CI job has a time limit); the rest wait.
     """
     sessions = get_upcoming_sessions(horizon_days=horizon_days)
-    pending = []
-    for s in sessions:
-        folder = (_COURSES.get(s["abbrev"], {}).get("folder_path")
-                  or DEST_ROOT / s["abbrev"])
-        m4a = (folder / f"{s['date_str']} {s['abbrev']}" /
-               f"{s['date_str']} {s['abbrev']} Podcast.m4a")
-        if not m4a.exists():
-            pending.append(s)
+    pending = [s for s in sessions if not _podcast_path(s).exists()]
 
     print(f"\n{'─'*55}")
     print(f"  PODCASTS — next {horizon_days} days")
     print(f"{'─'*55}")
     if not pending:
         print(f"  All {len(sessions)} session(s) already have one.")
+        _write_podcast_status([])
         return
-    print(f"  {len(pending)} of {len(sessions)} session(s) still need one "
-          f"(~{len(pending) * 10} min, one at a time):")
-    for s in pending:
+    todo = pending
+    if max_per_run and len(pending) > max_per_run:
+        print(f"  {len(pending)} missing; doing {max_per_run} this run, the rest next time.")
+        todo = pending[:max_per_run]
+    print(f"  {len(todo)} of {len(sessions)} session(s) still need one "
+          f"(~{len(todo) * 10} min, one at a time):")
+    for s in todo:
         print(f"    {s['due_dt'].strftime('%a %d %b')}  {s['abbrev']}")
 
     made = failed = 0
-    for s in pending:
+    for s in todo:
+        if _PODCAST_AUTH_FAILED:
+            break
         print(f"\n  [{s['date_str']} {s['abbrev']}]")
-        before = made
         generate_podcast_for_session(s)
-        folder = (_COURSES.get(s["abbrev"], {}).get("folder_path")
-                  or DEST_ROOT / s["abbrev"])
-        m4a = (folder / f"{s['date_str']} {s['abbrev']}" /
-               f"{s['date_str']} {s['abbrev']} Podcast.m4a")
-        if m4a.exists():
+        if _podcast_path(s).exists():
             made += 1
         else:
             failed += 1
 
-    print(f"\n  Podcasts: {made} made, {failed} still missing.")
-    if failed:
+    still_missing = [s for s in pending if not _podcast_path(s).exists()]
+    _write_podcast_status(still_missing)
+    print(f"\n  Podcasts: {made} made, {len(still_missing)} still missing.")
+    if still_missing and not _PODCAST_AUTH_FAILED:
         print("  Missing ones are retried on the next run; a render that outran "
               "its window is collected rather than restarted.")
 
 
 def run_daily(skip_prompt_regen: bool = False, with_podcast: bool = False,
-              podcast_days: int = PODCAST_HORIZON_DAYS):
+              podcast_days: int = PODCAST_HORIZON_DAYS, podcast_max: int = 0):
     """Sync files + refresh Notes for sessions in the next 2 calendar days."""
     now = datetime.now(tz=BOSTON)
     today = now.date()
@@ -1074,17 +1153,18 @@ def run_daily(skip_prompt_regen: bool = False, with_podcast: bool = False,
         print(f"  {trashed} duplicate(s) moved to Trash.")
 
     print("\n  Syncing calendar...")
-    calendar_sync.run()
+    _sync_calendar()
 
     if with_podcast:
-        run_podcast_pass(podcast_days)
+        run_podcast_pass(podcast_days, podcast_max)
 
     print(f"\n{'─'*55}")
     print("  Daily refresh complete.")
     print(f"{'─'*55}\n")
 
 
-def run_weekly(skip_prompt_regen: bool = False, with_podcast: bool = False):
+def run_weekly(skip_prompt_regen: bool = False, with_podcast: bool = False,
+               podcast_days: int = PODCAST_HORIZON_DAYS, podcast_max: int = 0):
     """
     Full forward scan:
       - Sync files for all courses (6-week horizon)
@@ -1157,7 +1237,7 @@ def run_weekly(skip_prompt_regen: bool = False, with_podcast: bool = False):
     print(f"  Saved: {ov}")
 
     print("\n  Syncing calendar...")
-    calendar_sync.run()
+    _sync_calendar()
 
     print("\n  Refreshing participation tracker...")
     try:
@@ -1165,7 +1245,13 @@ def run_weekly(skip_prompt_regen: bool = False, with_podcast: bool = False):
     except Exception as e:
         print(f"  ⚠ Participation tracker failed: {e}")
 
-    if with_podcast:
+    # The pick-which-to-skip prompt needs someone at a terminal. A scheduled or
+    # CI run has nobody there (input() on a closed stdin used to return "" and
+    # silently mean "all of them"), so it takes the same path as the daily run.
+    interactive = sys.platform == "darwin" and sys.stdin.isatty()
+    if with_podcast and not interactive:
+        run_podcast_pass(podcast_days, podcast_max)
+    elif with_podcast:
         import subprocess
         subprocess.run(["open", str(ov)], check=False)
 
@@ -1211,6 +1297,9 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--daily",  action="store_true", help="Next 2 calendar days")
     group.add_argument("--weekly", action="store_true", help="Full 6-week forward scan")
+    group.add_argument("--podcasts-only", action="store_true",
+                       help="Skip the sync; just generate missing podcasts in the window "
+                            "(what the Mac mirror job runs when the cloud could not)")
     parser.add_argument("--skip-prompt-regen", action="store_true",
                         help="Don't regenerate notes just because the master prompt changed "
                              "(useful after minor prompt tweaks)")
@@ -1222,6 +1311,10 @@ def main():
                         help=f"How many days ahead to make podcasts for "
                              f"(default {PODCAST_HORIZON_DAYS}). Use a smaller number to cover "
                              f"just the rest of this week rather than into next.")
+    parser.add_argument("--podcast-max", type=int, metavar="N",
+                        default=int(cfg("PODCAST_MAX_PER_RUN") or 0),
+                        help="At most N podcasts per run, 0 = no cap (default: "
+                             "PODCAST_MAX_PER_RUN env, else 0)")
     args = parser.parse_args()
 
     if not wait_for_canvas():
@@ -1229,11 +1322,14 @@ def main():
               "will pick up whatever was missed.")
         return
 
-    if args.daily:
+    if args.podcasts_only:
+        run_podcast_pass(args.podcast_days, args.podcast_max)
+    elif args.daily:
         run_daily(skip_prompt_regen=args.skip_prompt_regen, with_podcast=args.with_podcast,
-                  podcast_days=args.podcast_days)
+                  podcast_days=args.podcast_days, podcast_max=args.podcast_max)
     else:
-        run_weekly(skip_prompt_regen=args.skip_prompt_regen, with_podcast=args.with_podcast)
+        run_weekly(skip_prompt_regen=args.skip_prompt_regen, with_podcast=args.with_podcast,
+                   podcast_days=args.podcast_days, podcast_max=args.podcast_max)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,10 @@
 #
 #   ./setup.sh              install deps, create .env
 #   ./setup.sh --schedule   also install the 5pm daily / Sunday 8am launchd jobs
+#                           (everything runs on this Mac)
+#   ./setup.sh --mirror     instead install the every-30-min mirror job that
+#                           copies a cloud-run data repo into your iCloud folder
+#                           and makes podcasts the cloud couldn't (see README)
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,7 +19,7 @@ ok()   { printf "  \033[32m✓\033[0m %s\n" "$1"; }
 # ── 1. Python ────────────────────────────────────────────────────────────────
 say "1/5  Checking Python"
 PY=""
-for candidate in python3.13 python3.12 python3; do
+for candidate in python3.12 python3.13 python3.14 python3; do
     if command -v "$candidate" >/dev/null 2>&1; then
         if "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3,12) else 1)'; then
             PY="$(command -v "$candidate")"; break
@@ -67,21 +71,33 @@ fi
 
 # ── 5. Scheduled jobs ────────────────────────────────────────────────────────
 say "5/5  Scheduled jobs"
-if [ "${1:-}" != "--schedule" ]; then
-    echo "  Skipped. Re-run as './setup.sh --schedule' to install them."
-else
-    AGENTS="$HOME/Library/LaunchAgents"
-    mkdir -p "$AGENTS"
-    for job in daily weekly; do
-        LABEL="com.canvas-course-helper.$job"
-        sed -e "s|__PYTHON__|$REPO/.venv/bin/python3|g" -e "s|__REPO__|$REPO|g" \
-            "launchd/$LABEL.plist.template" > "$AGENTS/$LABEL.plist"
-        launchctl unload "$AGENTS/$LABEL.plist" 2>/dev/null || true
-        launchctl load "$AGENTS/$LABEL.plist"
-        ok "Installed $LABEL"
-    done
-    echo "  Daily runs at 5:00pm; weekly runs Sunday 8:00am."
-fi
+AGENTS="$HOME/Library/LaunchAgents"
+install_job() {   # install_job LABEL
+    sed -e "s|__PYTHON__|$REPO/.venv/bin/python3|g" -e "s|__REPO__|$REPO|g" \
+        -e "s|__HOME__|$HOME|g" \
+        "launchd/$1.plist.template" > "$AGENTS/$1.plist"
+    launchctl unload "$AGENTS/$1.plist" 2>/dev/null || true
+    launchctl load "$AGENTS/$1.plist"
+    ok "Installed $1"
+}
+case "${1:-}" in
+    --schedule)
+        mkdir -p "$AGENTS"
+        for job in daily weekly; do install_job "com.canvas-course-helper.$job"; done
+        echo "  Daily runs at 5:00pm; weekly runs Sunday 8:00am."
+        ;;
+    --mirror)
+        mkdir -p "$AGENTS" "$HOME/Library/Logs"
+        chmod +x scripts/mirror.sh
+        install_job "com.hbs-coursework.mirror"
+        echo "  Mirrors every 30 minutes (and now). Log: ~/Library/Logs/hbs-mirror.log"
+        echo "  Set MIRROR_CLONE / MIRROR_DEST in .env if the defaults don't fit."
+        ;;
+    *)
+        echo "  Skipped. Re-run as './setup.sh --schedule' (run everything on this Mac)"
+        echo "  or './setup.sh --mirror' (mirror a cloud-run data repo into iCloud)."
+        ;;
+esac
 
 say "Done."
 cat <<'NEXT'
