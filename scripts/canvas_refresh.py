@@ -1317,6 +1317,13 @@ def main():
                              "PODCAST_MAX_PER_RUN env, else 0)")
     args = parser.parse_args()
 
+    # A run with no courses would otherwise print "No upcoming sessions" and
+    # exit 0 — which in CI looks exactly like a quiet day rather than a
+    # missing secret.
+    if not COURSES:
+        sys.exit("\n  No courses configured. Set CANVAS_API_TOKEN and CANVAS_BASE_URL "
+                 "(environment or .env) and check canvas_config.json.\n")
+
     if not wait_for_canvas():
         print("  Skipping this run — nothing was changed. The next scheduled run "
               "will pick up whatever was missed.")

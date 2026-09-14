@@ -60,7 +60,7 @@ cd "$CLONE"
 git config user.name  >/dev/null || git config user.name  "hbs-mirror"
 git config user.email >/dev/null || git config user.email "hbs-mirror@users.noreply.github.com"
 
-RSYNC_X=(--exclude .git --exclude .github --exclude .trash --exclude .DS_Store --exclude '~$*' --exclude '*.icloud')
+RSYNC_X=(--exclude .git --exclude .github --exclude .gitignore --exclude .trash --exclude .DS_Store --exclude '~$*' --exclude '*.icloud')
 
 sync_out() {   # clone → mirror folder; -u keeps a newer mirror copy
     rsync -au "${RSYNC_X[@]}" "$CLONE/" "$DEST/"
