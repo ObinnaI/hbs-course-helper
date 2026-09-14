@@ -190,29 +190,80 @@ def _file_exists(session_dir: Path, stem: str) -> bool:
 
 # ── Playwright downloaders ────────────────────────────────────────────────────
 
-_MAGIC: list[tuple[bytes, str]] = [
-    (b"%PDF",           ".pdf"),
-    (b"PK\x03\x04",    ".docx"),  # ZIP-based: DOCX/XLSX/PPTX
-    (b"\xd0\xcf\x11\xe0", ".doc"),  # OLE: old DOC/XLS/PPT
+# Office documents are all ZIPs; the entry point inside says which kind.
+_OOXML_ENTRIES = [
+    ("word/document.xml",    ".docx"),
+    ("xl/workbook.xml",      ".xlsx"),
+    ("ppt/presentation.xml", ".pptx"),
 ]
+
+
+def _zip_ext(path: Path) -> "str | None":
+    """.docx/.xlsx/.pptx by looking inside the archive, or None if unknown."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = set(z.namelist())
+    except Exception:
+        return None
+    for entry, ext in _OOXML_ENTRIES:
+        if entry in names:
+            return ext
+    return None
+
+
+def _sniff_extension(path: Path) -> "str | None":
+    """The extension the file's content says it should have, or None."""
+    try:
+        with open(path, "rb") as fh:
+            magic = fh.read(4)
+    except Exception:
+        return None
+    if magic.startswith(b"%PDF"):
+        return ".pdf"
+    if magic.startswith(b"PK\x03\x04"):
+        # Every Office file was renamed to .docx before; an Excel exhibit then
+        # went to the notes generator as a Word document and came back empty.
+        return _zip_ext(path)
+    if magic.startswith(b"\xd0\xcf\x11\xe0"):
+        return ".doc"        # OLE: old DOC/XLS/PPT — no cheap way to tell apart
+    return None
+
 
 def _fix_extension(path: Path) -> Path:
     """
-    Check the file's magic bytes. If the extension doesn't match the actual
-    format, rename to the correct extension and return the new path.
+    Check the file's real format. If the extension doesn't match, rename to
+    the correct one and return the new path. Never renames onto an existing
+    file, and leaves anything it cannot identify alone.
     """
-    try:
-        magic = path.read_bytes()[:4]
-    except Exception:
+    ext = _sniff_extension(path)
+    if not ext or path.suffix.lower() == ext:
         return path
-    for sig, ext in _MAGIC:
-        if magic.startswith(sig):
-            if path.suffix.lower() != ext:
-                new = path.with_suffix(ext)
-                path.rename(new)
-                return new
-            return path
-    return path
+    new = path.with_suffix(ext)
+    if new.exists():
+        return path
+    path.rename(new)
+    return new
+
+
+# Title or URL patterns that mean a page is a wall, not an article. Body text
+# is deliberately not searched: real articles carry "Log in" in their nav.
+_LOGIN_RE = re.compile(
+    r"\b(log ?in|sign ?in|subscribe to continue|create an account|access denied"
+    r"|just a moment|attention required|are you a robot)\b", re.I)
+_MIN_ARTICLE_CHARS = 800
+
+
+def _looks_like_login(title: str, url: str, text: str) -> "str | None":
+    """Reason a rendered page should not be saved as a reading, or None."""
+    if _LOGIN_RE.search(title or ""):
+        return f"login/paywall page ({title.strip()[:40]})"
+    from urllib.parse import urlparse
+    if _LOGIN_RE.search(urlparse(url or "").path.replace("-", " ").replace("_", " ")):
+        return "redirected to a login page"
+    if len((text or "").strip()) < _MIN_ARTICLE_CHARS:
+        return f"only {len((text or '').strip())} characters of text"
+    return None
 
 
 async def _fetch_hbsp(ctx, href: str, title: str, session_dir: Path,
@@ -293,6 +344,19 @@ async def _fetch_article(ctx, href: str, title: str, session_dir: Path,
                 await page.wait_for_load_state("domcontentloaded", timeout=5_000)
             except Exception:
                 pass
+
+        # A paywall or login screen prints just as happily as an article, and
+        # once saved it counted as a reading forever. Skip it without a stub
+        # so the next run tries again (the wall may have been transient).
+        try:
+            page_title = await page.title()
+            body_text  = await page.evaluate("document.body ? document.body.innerText : ''")
+        except Exception:
+            page_title, body_text = "", ""
+        reason = _looks_like_login(page_title, page.url, body_text)
+        if reason:
+            print(f"    ✗ [article] {title}: {reason} — skipping")
+            return False
 
         pdf_bytes = await page.pdf(
             format="A4",
