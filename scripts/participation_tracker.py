@@ -4,7 +4,7 @@ participation_tracker.py — HBS participation tracker spreadsheet.
 
 Creates/refreshes: <COURSEWORK_ROOT>/Participation Tracker.xlsx
   - Single worksheet ("Participation")
-  - CATS | CFO | LME | LTV side by side, each a different color
+  - Every course side by side (alphabetical), each a different color
   - Narrow separator column between each course group
   - Row 1: course name header (dark course color, merged)
   - Row 2: live participation rate "X / Y" (mid course color, merged)
@@ -20,51 +20,56 @@ On refresh (called from canvas_refresh.py --weekly):
   - User-entered ratings are preserved (keyed by course + session date)
 
 Run standalone:
-  ~/repos/hbs-course-helper/.venv/bin/python3 participation_tracker.py
+  ./.venv/bin/python scripts/participation_tracker.py
 """
 
-import json
-import os
 import re
 import sys
-from datetime import datetime, timezone, timedelta, date as _date
+from datetime import datetime, date as _date
 from zoneinfo import ZoneInfo
 from pathlib import Path
-from urllib.error import HTTPError
-from urllib.parse import urlencode
-from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 # ── Path setup ────────────────────────────────────────────────────────────────
 
 sys.path.insert(0, str(Path(__file__).parent))
 import path_config
+from canvas_common import classify_submission
 
 _paths       = path_config.resolve()
 DEST_ROOT    = _paths["coursework_root"]
-ENV_FILE     = _paths["env_file"] or Path("/dev/null")
 _COURSES     = _paths["courses"]
 COURSE_NAMES = path_config.COURSE_NAMES
 
-COURSES      = {a: d["canvas_id"] for a, d in _COURSES.items() if d["folder_path"]}
-CANVAS_BASE  = _paths["canvas_base"]
 # Canvas due dates are wall-clock Boston time. ZoneInfo handles the EDT->EST
 # switch in early November; a fixed -4 offset silently shifted every date
 # bucket by an hour for the rest of the term.
 BOSTON = ZoneInfo("America/New_York")
 
-COURSE_ORDER    = ["CATS", "CFO", "LME", "LTV"]
 COLS_PER_COURSE = 3
 STRIDE          = COLS_PER_COURSE + 1   # 4: three data cols + one separator col
 DATA_START_ROW  = 4                     # rows 1-3 are header rows
 OUTPUT_FILE     = DEST_ROOT / "Participation Tracker.xlsx"
 
-# Per-course color scheme: (header_dark, rate_mid, even_row_light)
-COURSE_COLORS = {
-    "CATS": ("1E6B4A", "2A9466", "E8F6EF"),   # teal / green
-    "CFO":  ("1F4E79", "2E75B6", "EBF3FB"),   # navy / blue
-    "LME":  ("7B2133", "B03050", "FAEAED"),   # burgundy / red
-    "LTV":  ("4A2178", "6B33A8", "F1ECF9"),   # indigo / purple
-}
+# Per-course color scheme: (header_dark, rate_mid, even_row_light). Courses
+# take these in alphabetical order and wrap around; the set used to be keyed
+# by four specific course codes, which gave anyone else an empty sheet.
+_PALETTE = [
+    ("1E6B4A", "2A9466", "E8F6EF"),   # teal / green
+    ("1F4E79", "2E75B6", "EBF3FB"),   # navy / blue
+    ("7B2133", "B03050", "FAEAED"),   # burgundy / red
+    ("4A2178", "6B33A8", "F1ECF9"),   # indigo / purple
+    ("7A4A00", "B37400", "FBF3E4"),   # amber
+    ("2F3E4E", "4F6B85", "EDF1F5"),   # slate
+]
+
+
+def course_order() -> list[str]:
+    """Every course with a folder, alphabetical — the column order of the sheet."""
+    return sorted(a for a, d in _COURSES.items() if d.get("folder_path"))
+
+
+def course_colors(order: list[str]) -> dict[str, tuple[str, str, str]]:
+    return {a: _PALETTE[i % len(_PALETTE)] for i, a in enumerate(order)}
 
 
 def course_start_col(i: int) -> int:
@@ -75,62 +80,6 @@ def course_start_col(i: int) -> int:
 def sep_col_for(i: int) -> int:
     """1-indexed separator column that follows course i (i = 0, 1, 2)."""
     return i * STRIDE + COLS_PER_COURSE + 1   # 4, 8, 12
-
-
-# ── Canvas API ────────────────────────────────────────────────────────────────
-
-
-def _load_token() -> str:
-    token = os.getenv("CANVAS_API_TOKEN", "")
-    if token:
-        return token
-    if ENV_FILE.exists():
-        for line in ENV_FILE.read_text().splitlines():
-            line = line.strip()
-            if line.startswith("CANVAS_API_TOKEN=") and not line.startswith("#"):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
-    sys.exit(f"No CANVAS_API_TOKEN found. Check {ENV_FILE}")
-
-
-class _StripAuth(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if new_req:
-            from urllib.parse import urlparse
-            if urlparse(newurl).netloc != urlparse(req.full_url).netloc:
-                new_req.remove_header("Authorization")
-        return new_req
-
-
-_opener = build_opener(_StripAuth())
-
-
-def canvas_get(path: str, params: dict | None = None) -> list | dict:
-    token = _load_token()
-    url = f"{CANVAS_BASE}/{path.lstrip('/')}"
-    if params:
-        url += "?" + urlencode(params)
-    results = []
-    while url:
-        req = Request(url, headers={"Authorization": f"Bearer {token}"})
-        try:
-            resp = _opener.open(req, timeout=30)
-        except HTTPError as e:
-            print(f"    HTTP {e.code}: {url}")
-            return []
-        data = json.loads(resp.read())
-        if isinstance(data, list):
-            results.extend(data)
-        else:
-            return data
-        link = resp.headers.get("Link", "")
-        url = None
-        for part in link.split(","):
-            if 'rel="next"' in part:
-                m = re.search(r"<(.+?)>", part)
-                if m:
-                    url = m.group(1)
-    return results
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -169,19 +118,26 @@ def extract_case_title(name: str) -> str:
 # ── Session data ──────────────────────────────────────────────────────────────
 
 
-def get_all_sessions() -> dict[str, list[dict]]:
+def get_all_sessions(order: list[str]) -> dict[str, list[dict]]:
     """
-    Fetch all Canvas assignments with due dates for each active course.
-    Returns {abbrev: [assignment_dict, ...]}, sorted chronologically.
+    Fetch every class session for each course, chronologically.
+    Returns {abbrev: [assignment_dict, ...]}.
+
+    Quizzes and uploads are not participation opportunities and are left out.
     """
+    # Lazy: canvas_refresh imports this module at top level, and the two other
+    # modules in the same position already form import cycles that only work
+    # because they touch canvas_refresh at call time. Reusing its canvas_get
+    # also gets the network-error handling the local copy never had.
+    import canvas_refresh as cr
+
     result: dict[str, list[dict]] = {}
-    for abbrev in COURSE_ORDER:
-        course_id = COURSES.get(abbrev)
-        if not course_id:
-            result[abbrev] = []
-            continue
-        assignments = canvas_get(f"courses/{course_id}/assignments", {"per_page": 100})
-        sessions = [a for a in assignments if a.get("due_at")]
+    for abbrev in order:
+        course_id = _COURSES[abbrev]["canvas_id"]
+        assignments = cr.canvas_get(f"courses/{course_id}/assignments", {"per_page": 100})
+        sessions = [a for a in assignments
+                    if a.get("due_at")
+                    and classify_submission(a.get("submission_types")) != "deliverable"]
         sessions.sort(key=lambda a: a["due_at"])
         result[abbrev] = sessions
     return result
@@ -190,26 +146,42 @@ def get_all_sessions() -> dict[str, list[dict]]:
 # ── Preserve existing ratings ─────────────────────────────────────────────────
 
 
-def read_existing_ratings(path: Path) -> dict[str, dict[str, str]]:
+def read_existing_ratings(path: Path, order: list[str]) -> dict[str, dict[str, str]]:
     """
     Read user-entered ratings from an existing spreadsheet.
     Returns {abbrev: {yymmdd_key: rating_string}}.
-    Scans from row 3 onward and identifies cells by actual date values,
-    so it survives both the old and new header row layout.
+
+    Column groups are matched to courses by the full name in their row-1
+    header, not by position: with an alphabetical layout, a course added
+    mid-term can sort in front of the others and shift every group right,
+    and positional reading would then hand each course its neighbour's
+    ratings. Rows are identified by the date value in the Day column.
     """
-    ratings: dict[str, dict[str, str]] = {a: {} for a in COURSE_ORDER}
+    ratings: dict[str, dict[str, str]] = {a: {} for a in order}
     try:
         import openpyxl
     except ImportError:
         return ratings
 
+    by_header = {COURSE_NAMES.get(a, a): a for a in order}
+    by_header.update({a: a for a in order})     # a sheet written with bare codes
+
     try:
         wb = openpyxl.load_workbook(path, data_only=True)
         ws = wb.active
-        for i, abbrev in enumerate(COURSE_ORDER):
-            # Use current column layout (with separator stride)
+        i = 0
+        while True:
             day_col    = course_start_col(i)
-            rating_col = course_start_col(i) + 2
+            rating_col = day_col + 2
+            header     = ws.cell(row=1, column=day_col).value
+            if header is None or str(header).strip() == "":
+                break
+            abbrev = by_header.get(str(header).strip())
+            i += 1
+            if abbrev is None:
+                print(f"  Warning: column group '{header}' matches no current course "
+                      f"— its ratings are not carried over")
+                continue
 
             for row in ws.iter_rows(min_row=3):
                 if len(row) < rating_col:
@@ -240,27 +212,27 @@ def read_existing_ratings(path: Path) -> dict[str, dict[str, str]]:
 def build_tracker():
     try:
         import openpyxl
-        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+        from openpyxl.styles import Font, Alignment, PatternFill
         from openpyxl.formatting.rule import CellIsRule
         from openpyxl.worksheet.datavalidation import DataValidation
     except ImportError:
-        sys.exit(
-            "openpyxl not installed.\n"
-            "Run: ~/repos/hbs-course-helper/.venv/bin/python3 -m pip install openpyxl"
-        )
+        sys.exit("openpyxl not installed.\nRun: ./.venv/bin/pip install openpyxl")
+
+    order  = course_order()
+    colors = course_colors(order)
 
     # ── Preserve existing user ratings ────────────────────────────────────────
-    existing: dict[str, dict[str, str]] = {a: {} for a in COURSE_ORDER}
+    existing: dict[str, dict[str, str]] = {a: {} for a in order}
     if OUTPUT_FILE.exists():
-        existing = read_existing_ratings(OUTPUT_FILE)
+        existing = read_existing_ratings(OUTPUT_FILE, order)
         total = sum(len(v) for v in existing.values())
         if total:
             print(f"  Preserved {total} existing rating(s).")
 
     # ── Fetch Canvas sessions ─────────────────────────────────────────────────
     print("  Fetching sessions from Canvas...")
-    sessions = get_all_sessions()
-    for abbrev in COURSE_ORDER:
+    sessions = get_all_sessions(order)
+    for abbrev in order:
         print(f"    {abbrev}: {len(sessions.get(abbrev, []))} session(s)")
 
     max_sessions = max((len(v) for v in sessions.values()), default=0)
@@ -279,11 +251,11 @@ def build_tracker():
     # ── Column widths ─────────────────────────────────────────────────────────
     # Day=11, Case Title=42, Rating=10 per course; separator=2
     col_widths = [11, 42, 10]
-    for i in range(len(COURSE_ORDER)):
+    for i in range(len(order)):
         sc = course_start_col(i)
         for j, w in enumerate(col_widths):
             ws.column_dimensions[col_letter(sc + j)].width = w
-        if i < len(COURSE_ORDER) - 1:
+        if i < len(order) - 1:
             ws.column_dimensions[col_letter(sep_col_for(i))].width = 2
 
     # ── Row heights ────────────────────────────────────────────────────────────
@@ -292,13 +264,13 @@ def build_tracker():
     ws.row_dimensions[3].height = 18   # column labels
 
     # ── Per-course headers (rows 1–3) ─────────────────────────────────────────
-    for i, abbrev in enumerate(COURSE_ORDER):
+    for i, abbrev in enumerate(order):
         sc        = course_start_col(i)
         ec        = sc + COLS_PER_COURSE - 1
         rating_c  = col_letter(sc + 2)   # A+2, E+2 etc → C, G, K, O
         full_name = COURSE_NAMES.get(abbrev, abbrev)
 
-        dark, mid, _ = COURSE_COLORS[abbrev]
+        dark, mid, _ = colors[abbrev]
         dark_fill = PatternFill(fill_type="solid", fgColor=dark)
         mid_fill  = PatternFill(fill_type="solid", fgColor=mid)
         bold_white = Font(bold=True, color=WHITE, size=12)
@@ -335,9 +307,9 @@ def build_tracker():
             c3.alignment = center
 
     # ── Data rows (row 4+) ────────────────────────────────────────────────────
-    for i, abbrev in enumerate(COURSE_ORDER):
+    for i, abbrev in enumerate(order):
         sc = course_start_col(i)
-        _, _, light = COURSE_COLORS[abbrev]
+        _, _, light = colors[abbrev]
         even_fill = PatternFill(fill_type="solid", fgColor=light)
 
         course_sessions = sessions.get(abbrev, [])
@@ -399,7 +371,7 @@ def build_tracker():
         ("ok",    "FFEB9C", "9C5700", False),
         ("x",     "F2F2F2", "7F7F7F", False),
     ]
-    for i in range(len(COURSE_ORDER)):
+    for i in range(len(order)):
         sc       = course_start_col(i)
         rating_c = col_letter(sc + 2)
         rng      = f"{rating_c}{DATA_START_ROW}:{rating_c}{formula_end}"
