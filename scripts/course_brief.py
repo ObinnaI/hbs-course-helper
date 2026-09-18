@@ -414,7 +414,7 @@ def update_class_block(course_folder: Path, session_dir: Path, date_str: str,
     except notes_backend.NotesError as e:
         print(f"    ✗ {session_dir.name}: brief entry not written ({e})")
         return brief_text
-    text = text.strip()
+    text = tidy_entry(text.strip(), label)
     if not looks_like_entry(text):
         # The model asked a question or explained why it could not proceed.
         # Leave the old block (if any) and the fingerprint alone so it is
@@ -422,14 +422,29 @@ def update_class_block(course_folder: Path, session_dir: Path, date_str: str,
         print(f"    ✗ {session_dir.name}: response was not a brief entry — skipped "
               f"({text[:80]!r})")
         return brief_text
-    if not text.startswith("###"):
-        text = f"### Class {label}\n" + text
     state.setdefault("classes", {})[date_str] = fingerprint
     print(f"    + brief entry: {session_dir.name}")
     return upsert_block(brief_text, key, text)
 
 
 _ENTRY_MARKERS = ("**Lenses and frameworks", "**Key takeaways", "**Threads to carry forward")
+
+
+def tidy_entry(text: str, label: str) -> str:
+    """
+    The entry as it should be filed: from its first heading onward (the model
+    sometimes narrates — "here's the final entry:" — before it), one heading
+    only, and a heading at all.
+    """
+    i = text.find("### ")
+    if i > 0:
+        text = text[i:]
+    if not text.startswith("### "):
+        text = f"### Class {label}\n" + text
+    lines = text.splitlines()
+    head = lines[0]
+    body = [l for l in lines[1:] if l.strip() != head.strip()]   # drop a repeated heading
+    return "\n".join([head] + body).strip()
 
 
 def looks_like_entry(text: str) -> bool:

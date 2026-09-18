@@ -268,3 +268,12 @@ def test_label_does_not_double_the_word_class(course, monkeypatch):
     monkeypatch.setattr(cb, "_ask", ask)
     out = cb.update_class_block(course, past, "260909", cb.TEMPLATE.format(name="X", code="X"), {})
     assert "### Class 4 - Equity\n" in out and "Class Class" not in out
+
+
+def test_tidy_entry_strips_preamble_and_duplicate_heading():
+    raw = ("I'll just count the words manually — looks within budget. Here's the final entry:\n\n"
+           "### Class 5 - Pave\n**Lenses and frameworks introduced:** a\n### Class 5 - Pave\n**Key takeaways:**\n- b")
+    out = cb.tidy_entry(raw, "5 - Pave")
+    assert out.startswith("### Class 5 - Pave\n**Lenses")
+    assert out.count("### Class 5 - Pave") == 1 and "Here's the final" not in out
+    assert cb.tidy_entry("**Key takeaways:**\n- x", "5 - Pave").startswith("### Class 5 - Pave\n")
