@@ -278,7 +278,7 @@ def _fetch_enrolled_courses(token: str, base_url: str) -> list:
 
 # ── Terms ─────────────────────────────────────────────────────────────────────
 
-TERM_DIRS = {"fall", "spring", "summer", "winter"}
+TERM_DIRS = {"fall", "spring", "summer", "winter", "january", "j-term", "jterm"}
 _TERM_RE = re.compile(r"\b(fall|autumn|spring|summer|winter)\b", re.IGNORECASE)
 
 
@@ -542,7 +542,18 @@ def default_folder_name(abbrev: str, full_name: "str | None",
 _ENV_OVERRIDES = ("CANVAS_API_TOKEN", "CANVAS_BASE_URL", "CANVAS_API_URL")
 
 
-def resolve(create_folders: bool = True) -> dict:
+def _no_create_folders() -> bool:
+    """
+    CANVAS_NO_CREATE_FOLDERS=1 makes every resolve() in the process read-only.
+
+    Six scripts call resolve() at import time with folder creation on, so a
+    report-only tool that imports one of them would otherwise create course
+    folders as a side effect of `import`.
+    """
+    return os.getenv("CANVAS_NO_CREATE_FOLDERS", "").strip().lower() not in ("", "0", "false", "no")
+
+
+def resolve(create_folders: "bool | None" = None) -> dict:
     """
     Resolve all paths, auto-discover Canvas courses if the cache is stale,
     and update canvas_config.json when anything changes.
@@ -551,7 +562,9 @@ def resolve(create_folders: bool = True) -> dict:
     dicts/strings so existing callers holding references see the updates.
 
     create_folders=False only reports; --discover uses it to show what the
-    first real run would do.
+    first real run would do. Left unset it follows CANVAS_NO_CREATE_FOLDERS,
+    so a read-only tool can suppress creation process-wide before importing
+    the scripts that resolve at import time.
 
     Returns:
         {
@@ -573,6 +586,8 @@ def resolve(create_folders: bool = True) -> dict:
         }
     """
     global CANVAS_BASE
+    if create_folders is None:
+        create_folders = not _no_create_folders()
     cfg = _load_config()
     changed = False
 

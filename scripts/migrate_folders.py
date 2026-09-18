@@ -265,8 +265,23 @@ def main(argv=None) -> int:
     args = _parse_args(argv)
     if args.root:
         os.environ["COURSEWORK_ROOT"] = str(Path(args.root).expanduser())
-        os.environ.setdefault("CANVAS_CONFIG_FILE",
-                              str(Path(args.root).expanduser() / "claude" / "canvas_config.json"))
+    # This tool only ever renames folders that already exist. Importing
+    # canvas_refresh resolves paths at import time, which would otherwise
+    # create a folder for every course before the report is even printed —
+    # and the course list stays wherever CANVAS_CONFIG_FILE / .env says, so
+    # --root never silently starts a second config.
+    previous_no_create = os.environ.get("CANVAS_NO_CREATE_FOLDERS")
+    os.environ["CANVAS_NO_CREATE_FOLDERS"] = "1"
+    try:
+        return _run(args, path_config=None)
+    finally:
+        if previous_no_create is None:
+            os.environ.pop("CANVAS_NO_CREATE_FOLDERS", None)
+        else:
+            os.environ["CANVAS_NO_CREATE_FOLDERS"] = previous_no_create
+
+
+def _run(args, path_config=None) -> int:
     path_config, cc, cr = _import_scripts()
     paths = path_config.resolve(create_folders=False)
     root = paths["coursework_root"]

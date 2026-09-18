@@ -170,3 +170,19 @@ def test_overview_folder_is_not_a_course(monkeypatch, tmp_path):
     root, conf = _fresh(monkeypatch, tmp_path)
     (root / "Overview").mkdir()
     assert pc._find_course_folder("OVERVIEW", None, "Overview", None) is None
+
+
+def test_no_create_folders_env_makes_resolve_read_only(monkeypatch, tmp_path):
+    cfg = {"courses": {"INVS": {"canvas_id": 5, "full_name": "Seminar in Investing",
+                                "folder_name": None, "term": "Fall"}},
+           "courses_refreshed_at": "2999-01-01T00:00:00+00:00"}
+    root, conf = _fresh(monkeypatch, tmp_path, cfg)
+    monkeypatch.setenv("CANVAS_NO_CREATE_FOLDERS", "1")
+
+    paths = pc.resolve()                      # default, no explicit argument
+    assert not (root / "Fall").exists()
+    assert paths["courses"]["INVS"]["folder_path"] is None
+
+    monkeypatch.setenv("CANVAS_NO_CREATE_FOLDERS", "0")
+    pc.resolve()
+    assert (root / "Fall" / "Seminar in Investing").is_dir()
