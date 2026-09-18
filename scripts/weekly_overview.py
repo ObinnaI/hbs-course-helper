@@ -96,7 +96,7 @@ def generate(week_start: datetime | None = None) -> Path:
 
     for abbrev in sorted(_COURSES):
         info = _COURSES[abbrev]
-        if not info.get("folder_path"):
+        if not info.get("folder_path") or not path_config.is_active(info):
             continue
         cid = info["canvas_id"]
 

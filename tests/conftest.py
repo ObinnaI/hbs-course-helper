@@ -68,7 +68,8 @@ def patch_courses(monkeypatch, fake_paths):
 
     monkeypatch.setattr(path_config, "resolve", lambda *a, **k: fake_paths)
     monkeypatch.setattr(cr, "_COURSES", fake_paths["courses"])
-    monkeypatch.setattr(cr, "COURSES",
-                        {a: d["canvas_id"] for a, d in fake_paths["courses"].items()})
+    ids = {a: d["canvas_id"] for a, d in fake_paths["courses"].items()}
+    monkeypatch.setattr(cr, "COURSES", ids)
+    monkeypatch.setattr(cr, "ACTIVE_COURSES", dict(ids))
     monkeypatch.setattr(cr, "DEST_ROOT", fake_paths["coursework_root"])
     return fake_paths

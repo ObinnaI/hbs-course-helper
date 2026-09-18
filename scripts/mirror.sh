@@ -19,8 +19,8 @@
 # do not get along (partial syncs, "file.icloud" placeholders, duplicated refs).
 #
 # Settings (in the code repo's .env, or the environment):
-#   MIRROR_CLONE   path of the data-repo clone       default ~/hbs-coursework
-#   MIRROR_DEST    folder to mirror into             default the iCloud Classes folder below
+#   MIRROR_CLONE   path of the data-repo clone       default ~/hbs-coursework-2026
+#   MIRROR_DEST    folder to mirror into             default ~/Library/…/HBS/Classes/2026
 #   PODCAST_MAX_PER_RUN  episodes per tick           default 2
 
 set -euo pipefail
@@ -38,8 +38,8 @@ envval() {   # envval KEY DEFAULT — environment, then .env, then default
     printf '%s' "${v/#\~/$HOME}"
 }
 
-CLONE="$(envval MIRROR_CLONE "$HOME/hbs-coursework")"
-DEST="$(envval MIRROR_DEST "$HOME/Library/Mobile Documents/com~apple~CloudDocs/2026 HBS/Classes")"
+CLONE="$(envval MIRROR_CLONE "$HOME/hbs-coursework-2026")"
+DEST="$(envval MIRROR_DEST "$HOME/Library/Mobile Documents/com~apple~CloudDocs/HBS/Classes/2026")"
 PODCAST_MAX="$(envval PODCAST_MAX_PER_RUN 2)"
 XLSX="Participation Tracker.xlsx"
 STATE="$HOME/.hbs-mirror"
@@ -67,15 +67,20 @@ sync_out() {   # clone → mirror folder; -u keeps a newer mirror copy
 }
 
 # ── 1. ratings entered in the mirror folder → repo ────────────────────────────
-if [ -f "$DEST/$XLSX" ]; then
-    m="$(stat -f %m "$DEST/$XLSX")"
-    last="$(cat "$STATE/xlsx.mtime" 2>/dev/null || echo 0)"
-    if [ "$m" != "$last" ] && ! cmp -s "$DEST/$XLSX" "$CLONE/$XLSX"; then
-        cp "$DEST/$XLSX" "$CLONE/$XLSX"
-        git add -- "$XLSX"
-        git commit -qm "tracker: ratings entered on the Mac" && echo "$LOG_PREFIX committed tracker ratings" || true
+# One tracker per term folder (Fall/, Spring/), plus the old root one if any.
+trackers() { for x in "$DEST/$XLSX" "$DEST"/*/"$XLSX"; do [ -f "$x" ] && printf '%s\n' "${x#$DEST/}"; done; return 0; }
+mtime_key() { printf '%s' "$1" | tr '/ ' '__'; }
+while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    m="$(stat -f %m "$DEST/$rel")"
+    last="$(cat "$STATE/xlsx.$(mtime_key "$rel").mtime" 2>/dev/null || echo 0)"
+    if [ "$m" != "$last" ] && ! cmp -s "$DEST/$rel" "$CLONE/$rel"; then
+        mkdir -p "$(dirname "$CLONE/$rel")"
+        cp "$DEST/$rel" "$CLONE/$rel"
+        git add -- "$rel"
+        git commit -qm "tracker: ratings entered on the Mac ($rel)" && echo "$LOG_PREFIX committed $rel" || true
     fi
-fi
+done <<< "$(trackers)"
 
 # ── 2. pull, push ─────────────────────────────────────────────────────────────
 if ! git pull --rebase -X theirs -q origin main; then
@@ -89,7 +94,10 @@ fi
 
 # ── 3. clone → mirror ─────────────────────────────────────────────────────────
 sync_out
-stat -f %m "$DEST/$XLSX" > "$STATE/xlsx.mtime" 2>/dev/null || true
+while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    stat -f %m "$DEST/$rel" > "$STATE/xlsx.$(mtime_key "$rel").mtime" 2>/dev/null || true
+done <<< "$(trackers)"
 
 # ── 4. podcast fallback ───────────────────────────────────────────────────────
 STATUS="$CLONE/claude/podcast_status.json"

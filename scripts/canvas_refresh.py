@@ -48,8 +48,12 @@ ENV_FILE     = _paths["env_file"] or Path("/dev/null")
 _COURSES     = _paths["courses"]   # abbrev → {canvas_id, folder_path, ...}
 COURSE_NAMES = path_config.COURSE_NAMES
 
-# Build flat dicts for callers that need them
+# Build flat dicts for callers that need them. ACTIVE_COURSES drives the
+# scheduled loops (no API calls for a term that ended a month ago); COURSES
+# stays complete so on-demand work on an old session still resolves.
 COURSES = {a: d["canvas_id"] for a, d in _COURSES.items() if d["folder_path"]}
+ACTIVE_COURSES = {a: d["canvas_id"] for a, d in _COURSES.items()
+                  if d["folder_path"] and path_config.is_active(d)}
 
 CANVAS_BASE = _paths["canvas_base"]
 # Canvas due dates are wall-clock Boston time. ZoneInfo handles the EDT->EST
@@ -261,7 +265,7 @@ def get_upcoming_sessions(horizon_days: int,
     cutoff = now + timedelta(days=horizon_days)
     sessions: dict[tuple[str, str], dict] = {}
 
-    for abbrev, course_id in COURSES.items():
+    for abbrev, course_id in ACTIVE_COURSES.items():
         assignments = canvas_get(f"courses/{course_id}/assignments", {"per_page": 100})
         for a in assignments:
             if not a.get("due_at"):
@@ -1188,7 +1192,7 @@ def run_weekly(skip_prompt_regen: bool = False, with_podcast: bool = False,
 
     # Full file sync for all courses (6-week horizon)
     print("\n  Syncing all course files...")
-    for abbrev, course_id in COURSES.items():
+    for abbrev, course_id in ACTIVE_COURSES.items():
         print(f"  {abbrev}...")
         sync_course_files(course_id, abbrev, target_date_str=None)
 
@@ -1332,6 +1336,9 @@ def main():
     if not COURSES:
         sys.exit("\n  No courses configured. Set CANVAS_API_TOKEN and CANVAS_BASE_URL "
                  "(environment or .env) and check canvas_config.json.\n")
+    if not ACTIVE_COURSES:
+        print("  ⚠ Every known course's term has ended; nothing to sync until the next "
+              "term's courses appear in Canvas (run path_config.py --discover to check).")
 
     if not wait_for_canvas():
         print("  Skipping this run — nothing was changed. The next scheduled run "

@@ -111,7 +111,7 @@ def run(dry_run: bool = False) -> None:
 
     for abbrev in sorted(_COURSES):
         info = _COURSES[abbrev]
-        if not info.get("canvas_id"):
+        if not info.get("canvas_id") or not path_config.is_active(info):
             continue
         cid = info["canvas_id"]
 

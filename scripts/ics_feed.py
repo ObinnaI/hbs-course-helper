@@ -91,7 +91,7 @@ def build_events(courses: dict, now: "datetime | None" = None) -> list[dict]:
     for abbrev in sorted(courses):
         info = courses[abbrev]
         cid = info.get("canvas_id")
-        if not cid:
+        if not cid or not path_config.is_active(info, now):
             continue
         for a in cr.canvas_get(f"courses/{cid}/assignments", {"per_page": 100}):
             if not a.get("due_at"):

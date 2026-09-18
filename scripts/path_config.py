@@ -245,23 +245,96 @@ def _clean_course_name(raw: str) -> str:
 
 
 def _fetch_enrolled_courses(token: str, base_url: str) -> list:
-    """Return active student-enrolled Canvas courses via the API."""
+    """
+    Return active student-enrolled Canvas courses via the API, with each
+    course's term (`include[]=term` → {id, name, start_at, end_at}), following
+    pagination — a 101st course used to be dropped silently.
+    """
     params = urlencode({
         "enrollment_type":  "student",
         "enrollment_state": "active",
+        "include[]":        "term",
         "per_page":         "100",
     })
     url = f"{base_url}/courses?{params}"
+    out: list = []
     try:
-        req = Request(url, headers={"Authorization": f"Bearer {token}"})
-        with urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read())
+        while url:
+            req = Request(url, headers={"Authorization": f"Bearer {token}"})
+            with urlopen(req, timeout=15) as resp:
+                out.extend(json.loads(resp.read()))
+                link = resp.headers.get("Link", "")
+            url = None
+            for part in link.split(","):
+                if 'rel="next"' in part:
+                    m = re.search(r"<(.+?)>", part)
+                    url = m.group(1) if m else None
     except URLError as e:
         print(f"  [paths] WARNING: Canvas course discovery failed ({e})")
-        return []
     except Exception as e:
         print(f"  [paths] WARNING: Unexpected error during course discovery ({e})")
-        return []
+    return out
+
+
+# ── Terms ─────────────────────────────────────────────────────────────────────
+
+TERM_DIRS = {"fall", "spring", "summer", "winter"}
+_TERM_RE = re.compile(r"\b(fall|autumn|spring|summer|winter)\b", re.IGNORECASE)
+
+
+def term_folder(term_name: "str | None") -> "str | None":
+    """'Fall 2026' / '2026 Fall' / 'Autumn Term' → 'Fall'; 'Default Term' → None."""
+    m = _TERM_RE.search(term_name or "")
+    if not m:
+        return None
+    word = m.group(1).lower()
+    return "Fall" if word in ("fall", "autumn") else word.title()
+
+
+def term_end(course: dict) -> "str | None":
+    return (course.get("term") or {}).get("end_at") or course.get("end_at")
+
+
+def term_start(course: dict) -> "str | None":
+    return (course.get("term") or {}).get("start_at") or course.get("start_at")
+
+
+def _parse_iso(s: "str | None") -> "datetime | None":
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def is_active(entry: dict, now: "datetime | None" = None, grace_days: int = 30) -> bool:
+    """
+    A course still worth syncing: no known term end, or one less than
+    grace_days ago. Ended courses stay resolvable for on-demand work but cost
+    no API calls in the scheduled runs.
+    """
+    end = entry.get("term_end")
+    end = end if isinstance(end, datetime) else _parse_iso(end)
+    if end is None:
+        return True
+    now = now or datetime.now(timezone.utc)
+    return end + timedelta(days=grace_days) >= now
+
+
+def active_courses(courses: dict) -> dict:
+    return {a: d for a, d in courses.items() if is_active(d)}
+
+
+def terms(courses: dict) -> "dict[str, list[str]]":
+    """{'Fall': ['MP', 'NEG'], 'Spring': [...]} for courses with a folder."""
+    out: dict = {}
+    for abbrev, d in courses.items():
+        if not d.get("folder_path"):
+            continue
+        out.setdefault(d.get("term") or "Unsorted", []).append(abbrev)
+    return {t: sorted(v) for t, v in out.items()}
 
 
 def _should_refresh(cfg: dict) -> bool:
@@ -306,6 +379,8 @@ def _discover_courses(token: str, base_url: str, cfg: dict) -> "tuple[dict, bool
 
     existing  = cfg.get("courses", {})
     overrides = {str(k): v for k, v in cfg.get("abbrev_overrides", {}).items()}
+    term_overrides = {str(k): v for k, v in cfg.get("term_folders", {}).items()}
+    end_overrides  = {str(k): v for k, v in cfg.get("term_ends", {}).items()}
 
     merged: dict = {a: dict(e) for a, e in existing.items()}
     by_id: dict  = {str(e["canvas_id"]): a
@@ -321,12 +396,31 @@ def _discover_courses(token: str, base_url: str, cfg: dict) -> "tuple[dict, bool
         # then a freshly derived one deduped against everything known.
         abbrev = overrides.get(cid) or by_id.get(cid) or _abbrev_from_course(c, taken)
         taken.add(abbrev)
+        old  = merged.get(abbrev, {})
+        term = c.get("term") or {}
+        # Spread the old entry first so folder_name and any hand-set keys
+        # survive; the term is remembered even after Canvas stops returning
+        # the course (enrollment_state=active drops it once the term ends),
+        # which is what lets January tell Fall from Spring.
         merged[abbrev] = {
-            "canvas_id":   c["id"],
-            "full_name":   _clean_course_name(c.get("name", abbrev)),
-            "folder_name": merged.get(abbrev, {}).get("folder_name"),
+            **old,
+            "canvas_id":  c["id"],
+            "full_name":  _clean_course_name(c.get("name", abbrev)),
+            "term_id":    term.get("id", old.get("term_id")),
+            "term_name":  term.get("name", old.get("term_name")),
+            "term":       term_overrides.get(cid) or term_folder(term.get("name")) or old.get("term"),
+            "term_start": term_start(c) or old.get("term_start"),
+            "term_end":   end_overrides.get(cid) or term_end(c) or old.get("term_end"),
         }
         seen.append(abbrev)
+
+    # Term overrides apply to every known course, returned this time or not.
+    for abbrev, entry in merged.items():
+        cid = str(entry.get("canvas_id"))
+        if cid in term_overrides:
+            entry["term"] = term_overrides[cid]
+        if cid in end_overrides:
+            entry["term_end"] = end_overrides[cid]
 
     # Apply overrides across the whole map rather than only this response, so a
     # course Canvas didn't return still ends up under the abbrev you chose.
@@ -360,48 +454,88 @@ def _discover_courses(token: str, base_url: str, cfg: dict) -> "tuple[dict, bool
 
 # ── Course folder resolution ──────────────────────────────────────────────────
 
-def _find_course_folder(abbrev: str, cached: "str | None" = None) -> "str | None":
+_STOPWORDS = {"a", "an", "the", "and", "or", "of", "for", "in", "on", "to", "at", "with"}
+
+
+def _words(s: str) -> list:
+    return [w for w in re.findall(r"[a-z0-9]+", (s or "").lower()) if w not in _STOPWORDS]
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", "", (s or "").lower())
+
+
+def _match_in(dir_: Path, abbrev: str, full_name: str) -> "str | None":
     """
-    Find the actual subfolder name for a course abbreviation.
-    Priority: cached name → exact match → case-insensitive → fuzzy word match.
-    Returns the folder name (not full path), or None if not found.
+    The child of dir_ that is this course, or None. Exact name first, then
+    case/space-insensitive, then every non-stopword word of the full name
+    present as a whole word (or difflib ≥ 0.85), then the abbreviation as a
+    whole word — so "IP" cannot match "Seminar in Investing".
     """
-    # Not courses: the scripts folder and the weekly overview folder. Checked
-    # case-insensitively because the exact-match probe below runs on a
-    # case-insensitive filesystem on macOS.
-    exclude = {"claude", "overview"}
-
-    for name in filter(None, [cached, abbrev]):
-        if name.lower() not in exclude and (COURSEWORK_ROOT / name).is_dir():
-            return name
-
-    abbrev_lower = abbrev.lower().replace(" ", "")
-    abbrev_words = abbrev.lower().split()
-
-    for d in COURSEWORK_ROOT.iterdir():
-        if not d.is_dir() or d.name.lower() in exclude or d.name.startswith("."):
-            continue
-        name = d.name
-        if name.lower().replace(" ", "") == abbrev_lower:
-            return name
-        if all(w in name.lower() for w in abbrev_words):
-            return name
-
+    import difflib
+    if not dir_.is_dir():
+        return None
+    kids = [d for d in dir_.iterdir()
+            if d.is_dir() and not d.name.startswith(".")
+            and d.name.lower() not in {"claude", "overview"} | TERM_DIRS]
+    # Exact match by name string, not is_dir(): macOS's case-insensitive
+    # filesystem would otherwise report "Negotiations" for "negotiations".
+    for d in kids:
+        if full_name and d.name == _folder_safe(full_name):
+            return d.name
+    for d in kids:
+        if full_name and _norm(d.name) == _norm(full_name):
+            return d.name
+        if _norm(d.name) == _norm(abbrev):
+            return d.name
+    want = _words(full_name)
+    for d in kids:
+        have = set(_words(d.name))
+        if want and all(w in have for w in want):
+            return d.name
+        if full_name and difflib.SequenceMatcher(None, _norm(d.name), _norm(full_name)).ratio() >= 0.85:
+            return d.name
+    abbrev_words = _words(abbrev)
+    for d in kids:
+        have = set(re.findall(r"[a-z0-9]+", d.name.lower()))
+        if abbrev_words and all(w in have for w in abbrev_words):
+            return d.name
     return None
+
+
+def _find_course_folder(abbrev: str, cached: "str | None" = None,
+                        full_name: str = "", term: "str | None" = None) -> "str | None":
+    """
+    Find the course's folder, relative to COURSEWORK_ROOT ("Fall/Motivating
+    People"). Priority: cached name → within the term folder: exact full
+    name → case-insensitive → fuzzy → abbreviation. A course is never matched
+    to another term's folder; only a course with no known term falls back to
+    scanning the root (the pre-term layout).
+    """
+    if cached and (COURSEWORK_ROOT / cached).is_dir():
+        return cached
+    if term:
+        hit = _match_in(COURSEWORK_ROOT / term, abbrev, full_name)
+        return f"{term}/{hit}" if hit else None
+    return _match_in(COURSEWORK_ROOT, abbrev, full_name)
 
 
 def _folder_safe(name: str) -> str:
     return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", name).strip(". ")
 
 
-def default_folder_name(abbrev: str, full_name: "str | None") -> str:
+def default_folder_name(abbrev: str, full_name: "str | None",
+                        term: "str | None" = None) -> str:
     """
-    "INVS - Seminar in Investing": the code so scripts and the session
-    folders ("260915 INVS") line up, the name so a human can find it.
+    "Fall/Seminar in Investing": the term folder, then the course's full
+    name — what a human looks for. The abbreviation still appears inside the
+    folder, in file prefixes like "260915 INVS Podcast.m4a".
     """
     if full_name and full_name.strip() and full_name.strip() != abbrev:
-        return _folder_safe(f"{abbrev} - {full_name.strip()}")
-    return abbrev
+        base = _folder_safe(full_name.strip())
+    else:
+        base = abbrev
+    return f"{term}/{base}" if term else base
 
 # ── Main resolution function ──────────────────────────────────────────────────
 
@@ -503,14 +637,15 @@ def resolve(create_folders: bool = True) -> dict:
         if str(canvas_id) in ignored:
             continue   # listed in ignored_courses — e.g. an admin or kickoff shell
 
+        full_name = entry.get("full_name", abbrev)
+        term      = entry.get("term")
+
         cached_name = entry.get("folder_name")
-        folder_name = _find_course_folder(abbrev, cached_name)
+        folder_name = _find_course_folder(abbrev, cached_name, full_name, term)
         if folder_name != cached_name:
             print(f"  [paths] {abbrev}: folder {cached_name!r} → {folder_name!r}")
             cfg["courses"][abbrev]["folder_name"] = folder_name
             changed = True
-
-        full_name = entry.get("full_name", abbrev)
 
         # A course with no folder used to be dropped from every loop in
         # canvas_refresh, which meant it never got a folder created and so could
@@ -519,7 +654,7 @@ def resolve(create_folders: bool = True) -> dict:
         # already chosen in the config (seeded by hand, or by an earlier run
         # whose empty folder git did not keep) wins over the derived default.
         if folder_name is None:
-            want = cached_name or default_folder_name(abbrev, full_name)
+            want = cached_name or default_folder_name(abbrev, full_name, term)
             new_dir = COURSEWORK_ROOT / want
             if not create_folders:
                 print(f"  [paths] {abbrev}: would create course folder {new_dir}")
@@ -546,6 +681,9 @@ def resolve(create_folders: bool = True) -> dict:
             "folder_name":       folder_name,
             "folder_path":       folder_path,
             "refinement_prompt": refinement if refinement.exists() else None,
+            "term":              term,
+            "term_name":         entry.get("term_name"),
+            "term_end":          _parse_iso(entry.get("term_end")),
         }
 
     if not courses and not token:
@@ -579,17 +717,30 @@ def _discover_cli() -> None:
     if not paths["courses"]:
         print("  No courses. Check CANVAS_API_TOKEN / CANVAS_BASE_URL.\n")
         return
-    rows = [("ABBREV", "CANVAS ID", "FOLDER", "FULL NAME")]
+    raw_terms = sorted({str(i.get("term_name")) for i in paths["courses"].values()})
+    print(f"  Canvas term names seen: {', '.join(raw_terms)}\n")
+    rows = [("ABBREV", "CANVAS ID", "TERM", "ENDS", "FOLDER", "FULL NAME")]
+    warn = []
     for abbrev, info in sorted(paths["courses"].items()):
-        folder = info["folder_name"] or f"(would create) {default_folder_name(abbrev, info['full_name'])}"
-        rows.append((abbrev, str(info["canvas_id"]), folder, info["full_name"]))
-    widths = [max(len(r[i]) for r in rows) for i in range(4)]
+        term = info.get("term") or "?"
+        if term == "?":
+            warn.append(f'{abbrev}: no term recognised in "{info.get("term_name")}" '
+                        f'— set "term_folders": {{"{info["canvas_id"]}": "Fall"}}')
+        end = info.get("term_end")
+        ends = end.strftime("%Y-%m-%d") if end else "?"
+        folder = info["folder_name"] or \
+            f"(would create) {default_folder_name(abbrev, info['full_name'], info.get('term'))}"
+        rows.append((abbrev, str(info["canvas_id"]), term, ends, folder, info["full_name"]))
+    widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
     for r in rows:
         print("  " + "  ".join(c.ljust(w) for c, w in zip(r, widths)))
+    for w in warn:
+        print(f"\n  WARN {w}")
     print(f"""
   To change an abbreviation:  "abbrev_overrides": {{"<canvas id>": "INVS"}}
   To skip a course:           "ignored_courses":  [<canvas id>]
-  To pick a folder name:      set "folder_name" on the course entry
+  To pick a folder name:      set "folder_name" on the course entry (e.g. "Fall/Negotiations")
+  To fix a term:              "term_folders": {{"<canvas id>": "Spring"}}, "term_ends": {{"<canvas id>": "2026-12-20"}}
   ...in {CONFIG_FILE}, then run this again.
 """)
 

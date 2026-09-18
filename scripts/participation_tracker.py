@@ -25,7 +25,7 @@ Run standalone:
 
 import re
 import sys
-from datetime import datetime, date as _date
+from datetime import datetime, timedelta, date as _date
 from zoneinfo import ZoneInfo
 from pathlib import Path
 
@@ -49,7 +49,14 @@ BOSTON = ZoneInfo("America/New_York")
 COLS_PER_COURSE = 3
 STRIDE          = COLS_PER_COURSE + 1   # 4: three data cols + one separator col
 DATA_START_ROW  = 4                     # rows 1-3 are header rows
-OUTPUT_FILE     = DEST_ROOT / "Participation Tracker.xlsx"
+TRACKER_NAME    = "Participation Tracker.xlsx"
+LEGACY_FILE     = DEST_ROOT / TRACKER_NAME   # pre-term layout: one sheet at the root
+TERM_OVER_DAYS  = 30                         # leave a term's sheet alone this long after its last class
+
+
+def tracker_path(term: str) -> Path:
+    """One sheet per term: <root>/Fall/Participation Tracker.xlsx."""
+    return DEST_ROOT / term / TRACKER_NAME
 
 # Per-course color scheme: (header_dark, rate_mid, even_row_light). Courses
 # take these in alphabetical order and wrap around; the set used to be keyed
@@ -64,9 +71,10 @@ _PALETTE = [
 ]
 
 
-def course_order() -> list[str]:
-    """Every course with a folder, alphabetical — the column order of the sheet."""
-    return sorted(a for a, d in _COURSES.items() if d.get("folder_path"))
+def course_order(term: "str | None" = None) -> list[str]:
+    """Every course with a folder (in this term, if given), alphabetical."""
+    return sorted(a for a, d in _COURSES.items()
+                  if d.get("folder_path") and (term is None or d.get("term") == term))
 
 
 def course_colors(order: list[str]) -> dict[str, tuple[str, str, str]]:
@@ -200,7 +208,8 @@ def read_existing_ratings(path: Path, order: list[str]) -> dict[str, dict[str, s
 # ── Spreadsheet builder ───────────────────────────────────────────────────────
 
 
-def build_tracker():
+def build_tracker(term: str, order: "list[str] | None" = None,
+                  sessions: "dict | None" = None):
     try:
         import openpyxl
         from openpyxl.styles import Font, Alignment, PatternFill
@@ -209,20 +218,24 @@ def build_tracker():
     except ImportError:
         sys.exit("openpyxl not installed.\nRun: ./.venv/bin/pip install openpyxl")
 
-    order  = course_order()
+    OUTPUT_FILE = tracker_path(term)
+    order  = order if order is not None else course_order(term)
     colors = course_colors(order)
 
     # ── Preserve existing user ratings ────────────────────────────────────────
+    # A term's first sheet inherits from the old single root sheet, if any.
     existing: dict[str, dict[str, str]] = {a: {} for a in order}
-    if OUTPUT_FILE.exists():
-        existing = read_existing_ratings(OUTPUT_FILE, order)
+    source = OUTPUT_FILE if OUTPUT_FILE.exists() else (LEGACY_FILE if LEGACY_FILE.exists() else None)
+    if source is not None:
+        existing = read_existing_ratings(source, order)
         total = sum(len(v) for v in existing.values())
         if total:
-            print(f"  Preserved {total} existing rating(s).")
+            print(f"  Preserved {total} existing rating(s) from {source.name}.")
 
     # ── Fetch Canvas sessions ─────────────────────────────────────────────────
-    print("  Fetching sessions from Canvas...")
-    sessions = get_all_sessions(order)
+    if sessions is None:
+        print("  Fetching sessions from Canvas...")
+        sessions = get_all_sessions(order)
     for abbrev in order:
         print(f"    {abbrev}: {len(sessions.get(abbrev, []))} session(s)")
 
@@ -379,6 +392,7 @@ def build_tracker():
 
     # ── Save ──────────────────────────────────────────────────────────────────
     try:
+        OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
         wb.save(OUTPUT_FILE)
     except PermissionError:
         sys.exit(
@@ -391,17 +405,37 @@ def build_tracker():
 # ── Public entry point (called from canvas_refresh.py) ───────────────────────
 
 
-def refresh():
-    """Refresh the participation tracker. Called from canvas_refresh.py --weekly."""
-    build_tracker()
+def refresh(now: "datetime | None" = None):
+    """
+    Refresh one tracker per term. Called from canvas_refresh.py --weekly.
+
+    A term whose last class was more than TERM_OVER_DAYS ago is left exactly
+    as it is — the ratings in it are a record, not something to rebuild.
+    """
+    now = now or datetime.now(tz=BOSTON)
+    by_term = path_config.terms(_COURSES)
+    if not by_term:
+        print("  No courses with folders — nothing to build.")
+        return
+    for term, order in sorted(by_term.items()):
+        print(f"  {term}: fetching sessions from Canvas...")
+        sessions = get_all_sessions(order)
+        dues = [boston_date(a["due_at"]) for v in sessions.values() for a in v]
+        if not dues:
+            print(f"  {term}: no class sessions posted yet — skipping.")
+            continue
+        if max(dues) < now - timedelta(days=TERM_OVER_DAYS):
+            print(f"  {term}: term over, tracker left as is.")
+            continue
+        build_tracker(term, order=order, sessions=sessions)
 
 
 # ── Standalone ───────────────────────────────────────────────────────────────
 
 
 def main():
-    print("Building HBS participation tracker...")
-    build_tracker()
+    print("Building HBS participation tracker(s)...")
+    refresh()
     print("Done.")
 
 
