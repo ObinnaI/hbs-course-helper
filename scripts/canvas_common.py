@@ -93,7 +93,8 @@ def safe_name(s: str, max_len: int = 200) -> str:
 
 
 def class_number(text: str) -> "int | None":
-    m = re.search(r"\bclass\s+(\d+)\b", text or "", re.IGNORECASE)
+    """'MP | Class 5: Pave' → 5; 'NEG | Session 3 | Treu' → 3 (HBS uses both words)."""
+    m = re.search(r"\b(?:class|session)\s+(\d+)\b", text or "", re.IGNORECASE)
     return int(m.group(1)) if m else None
 
 
@@ -106,7 +107,7 @@ def extract_case_title(name: str) -> str:
     e.g. "CFO | Class 3: The DCF Method" → "The DCF Method"
     """
     name = name or ""
-    m = re.search(r"class\s+\d+\s*[:\-–—]\s*(.*)", name, re.IGNORECASE)
+    m = re.search(r"(?:class|session)\s+\d+\s*[:\-–—|]\s*(.*)", name, re.IGNORECASE)
     if m and m.group(1).strip():
         return m.group(1).strip()
     if "|" in name:

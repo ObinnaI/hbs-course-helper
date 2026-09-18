@@ -111,6 +111,12 @@ def test_is_protected_dir():
     assert not cc.is_protected_dir("260916 Class 5 - Pave")
 
 
+def test_session_number_word():
+    assert cc.class_number("NEG | Session 3 | Treu Pharma") == 3
+    assert cc.session_dirname("260910", "NEG", [_a("NEG | Session 3 | Treu Pharma")]) \
+        == "260910 Class 3 - Treu Pharma"
+
+
 def test_extract_case_title_variants():
     assert cc.extract_case_title("CFO | Class 3: The DCF Method") == "The DCF Method"
     assert cc.extract_case_title("MP | Class 5 – Pave (A)") == "Pave (A)"
