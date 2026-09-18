@@ -277,3 +277,19 @@ def test_tidy_entry_strips_preamble_and_duplicate_heading():
     assert out.startswith("### Class 5 - Pave\n**Lenses")
     assert out.count("### Class 5 - Pave") == 1 and "Here's the final" not in out
     assert cb.tidy_entry("**Key takeaways:**\n- x", "5 - Pave").startswith("### Class 5 - Pave\n")
+
+
+def test_prune_drops_blocks_without_a_folder_or_inputs(course):
+    text = cb.TEMPLATE.format(name="X", code="X")
+    text = cb.upsert_block(text, "class-260902", "### Class Syllabus\n**Threads to carry forward:**\n- revisit\n")
+    text = cb.upsert_block(text, "class-260909", "### Class 4\n**Lenses and frameworks introduced:** a\n**Threads to carry forward:**\n- keep me\n")
+    (course / "260930 Class 8 - Empty").mkdir()
+    text = cb.upsert_block(text, "class-260930", "### Class 8\n**Key takeaways:**\n- x\n")
+    state = {"classes": {"260902": "f", "260909": "f", "260930": "f"}}
+
+    out = cb.prune_stale_blocks(course, text, state)
+
+    keys = set(cb.blocks(out))
+    assert "class-260909" in keys and "class-260902" not in keys and "class-260930" not in keys
+    assert set(state["classes"]) == {"260909"}
+    assert "- keep me" in cb.blocks(out)["threads"] and "revisit" not in cb.blocks(out)["threads"]

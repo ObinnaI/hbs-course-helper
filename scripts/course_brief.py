@@ -492,6 +492,33 @@ def _about(course_folder: Path, abbrev: str, full_name: str, brief_text: str,
     return upsert_block(brief_text, "about", text.strip())
 
 
+def _has_inputs(session_dir: Path, date_str: str) -> bool:
+    context, on_disk, _ = _class_inputs(session_dir, date_str)
+    return bool(on_disk) or any(k in context for k in ("=== CHEAT SHEET", "=== READING", "=== POST-CLASS"))
+
+
+def prune_stale_blocks(course_folder: Path, text: str, state: dict) -> str:
+    """
+    Drop class blocks whose folder is gone or holds nothing to distil — a
+    syllabus day that never had files, a folder the user removed — so the
+    brief only remembers classes that exist. The threads roll-up follows.
+    """
+    dirs = {ds: d for ds, d in _session_dirs(course_folder)}
+    removed = False
+    for key in list(blocks(text)):
+        if not key.startswith("class-"):
+            continue
+        ds = key.split("-", 1)[1]
+        d = dirs.get(ds)
+        if d is None or not _has_inputs(d, ds):
+            text = re.sub(rf"<!-- auto:{re.escape(key)} -->\n?.*?<!-- /auto:{re.escape(key)} -->\n?",
+                          "", text, count=1, flags=re.DOTALL)
+            state.get("classes", {}).pop(ds, None)
+            print(f"    – dropped brief entry for {ds}: nothing on disk to base it on")
+            removed = True
+    return _roll_up_threads(text) if removed else text
+
+
 def update_course(abbrev: str, info: dict, bootstrap: bool = False,
                   force: bool = False, today=None) -> None:
     course_folder = info.get("folder_path")
@@ -504,6 +531,7 @@ def update_course(abbrev: str, info: dict, bootstrap: bool = False,
     today = today or datetime.now(timezone.utc).date()
 
     text = _about(course_folder, abbrev, full_name, text, state)
+    text = prune_stale_blocks(course_folder, text, state)
 
     lines = update_materials_index(course_folder, abbrev)
     text = upsert_block(text, "materials", "\n".join(lines) if lines else "_(no files yet)_")
