@@ -5,9 +5,10 @@
 #
 # Runs from launchd every 30 minutes (./setup.sh --mirror installs it). Each
 # tick:
-#   1. If the Participation Tracker in the mirror folder was edited since the
+#   1. If a Participation Tracker in the mirror folder was edited since the
 #      last tick, copy it into the clone and commit — ratings entered on the
 #      Mac must reach the repo before the next weekly refresh rebuilds the sheet.
+#   1b. Copy up any NEW file in a class-day folder or on the materials shelf.
 #   2. git pull --rebase (the Mac's commit wins any conflict), push if ahead.
 #   3. rsync clone → mirror folder. Never deletes, never overwrites a mirror
 #      file that is newer than the clone's copy.
@@ -81,6 +82,24 @@ while IFS= read -r rel; do
         git commit -qm "tracker: ratings entered on the Mac ($rel)" && echo "$LOG_PREFIX committed $rel" || true
     fi
 done <<< "$(trackers)"
+
+# ── 1b. files you added in the mirror folder → repo ──────────────────────────
+# New files inside class-day folders and the course materials shelf are
+# copied up (never overwriting, never deleting) so a PDF or sheet dropped in
+# on the Mac reaches the cloud job on its next run. Quiz/, Course Docs/ and
+# other folders of your own are left where they are.
+if rsync -a --ignore-existing --prune-empty-dirs --max-size=95m \
+        --exclude '.DS_Store' --exclude '*.icloud' --exclude '~$*' --exclude '.trash' \
+        --exclude 'course_files_export*' --exclude '.git' \
+        --include '*/' \
+        --include '/*/*/[0-9][0-9][0-9][0-9][0-9][0-9] */***' \
+        --include '/*/*/Course */***' --include '/*/*/General/***' \
+        --include '/*/*/CLAUDE.md' \
+        --exclude '*' \
+        "$DEST/" "$CLONE/" 2>/dev/null; then
+    git add -A
+    if git commit -qm "mirror: files added on the Mac"; then echo "$LOG_PREFIX committed files added on the Mac"; fi
+fi
 
 # ── 2. pull, push ─────────────────────────────────────────────────────────────
 if ! git pull --rebase -X theirs -q origin main; then

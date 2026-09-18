@@ -26,25 +26,25 @@ Open a note and paste these in as you go. You'll need all three in Step 3.
 ### 2. Your Canvas web address
 
 Look at your browser's address bar while you're in Canvas and copy just the
-domain — e.g. `https://canvas.harvard.edu`. No trailing slash.
+domain — for HBS it is `https://hbs.instructure.com`. No trailing slash.
 
-### 3. An Anthropic API key
+### 3. A Claude login (subscription) — or an API key
 
-This is the part people get stuck on, so read it carefully.
+By default the cheat sheets are written through **Claude Code** with your
+Claude Pro/Max subscription, so there is nothing to buy:
 
-**A claude.ai login is not an API key.** Claude for Education, a Claude Pro
-subscription, and a claude.ai account are all the *chat* product. This tool
-talks to the *developer* product, which is billed separately, by the token.
+1. Install Claude Code: `npm install -g @anthropic-ai/claude-code` (needs
+   Node; `brew install node` if you don't have it).
+2. Run `claude` once in Terminal and sign in with your claude.ai account.
+3. For the cloud job, run `claude setup-token` and keep the token it prints —
+   it becomes the `CLAUDE_CODE_OAUTH_TOKEN` secret (valid a year).
 
-1. Go to **https://console.anthropic.com** and sign in.
-2. If your school has set up an organization there, you may be able to join it
-   and bill to that workspace — check with IT or your program office before
-   you put a personal card in.
-3. Go to **Settings → API keys → Create key**, and copy it. It starts `sk-ant-`.
-4. Add a payment method under **Billing**, or the key returns errors on the
-   first run. Set a monthly spend limit while you're there — $20 is plenty.
+Headless runs count against the plan's 5-hour and weekly allowance like your
+own chats do; `NOTES_MAX_PER_RUN` in `.env` caps how many sheets one run makes.
 
-Expect roughly **$0.30–$0.80 per class session** of generated notes.
+Prefer to keep the subscription for interactive work? Set `NOTES_BACKEND=api`
+and add an `ANTHROPIC_API_KEY` from https://console.anthropic.com (billed per
+token, roughly $0.20–$0.60 per class).
 
 ---
 
@@ -76,7 +76,10 @@ open -e .env
 
 Replace the placeholder on each line with the values you collected above, then
 save (⌘-S) and close. `COURSEWORK_ROOT` is where your course folders live —
-`~/Desktop/Coursework` is a fine answer if you don't have one yet.
+`~/Desktop/Coursework` is a fine answer if you don't have one yet. Inside it,
+courses go under a term folder (`Fall/Motivating People/`); the first run creates
+them, or run `./.venv/bin/python scripts/path_config.py --discover` first to see
+what it would create and adjust names in `canvas_config.json`.
 
 > `.env` holds live credentials. It is already excluded from git, so it will
 > never be uploaded — but don't paste its contents into email or Slack either.

@@ -19,7 +19,9 @@ Works with any Canvas LMS instance (Harvard Business School, Stanford GSB, Whart
 | `ics_feed.py` | Write the same deadlines as a subscribable `canvas.ics` feed (what the cloud run publishes). |
 | `participation_tracker.py` | Build/refresh `Participation Tracker.xlsx` — all courses side by side with a live spoke/entered rate per course. |
 | `path_config.py --discover` | Show the courses Canvas returns and the folder each would get, without creating anything. Run before the first sync. |
-| `cheat_sheet.py YYMMDD COURSE` | Generate case prep notes (`.docx` + `.md`) on demand for a specific session. |
+| `cheat_sheet.py YYMMDD COURSE` | Generate the cheat sheet (`.docx` + `.md`) on demand for a specific class day. |
+| `course_brief.py` | Maintain each course's `Course Brief.md` (lenses per class, threads, materials index) and `CLAUDE.md`. Runs after every sync; `--bootstrap` for the first fill. |
+| `migrate_folders.py` | Adopt hand-made class folders (`Class 5 - Pave`) into the dated scheme. Dry run by default. |
 | `podcast_gen.py YYMMDD COURSE` | Generate a ~30-min NotebookLM audio overview on demand for a specific session. |
 | `update_mcps.py` | Check PyPI for dependency updates and upgrade the venv. Run manually when needed. |
 
@@ -76,12 +78,16 @@ Debug / preview:
 
 ---
 
-## Notes (AI case prep)
+## Cheat sheets (AI case prep)
 
-Claude reads the assigned PDFs and Canvas discussion questions and generates a structured `.docx` with:
-- Verbatim Canvas assignment at the top
-- Case analysis keyed to the discussion questions
-- Saved as `YYMMDD COURSE Notes.docx` in the session folder, with the same content as `YYMMDD COURSE Notes.md` beside it (readable in the GitHub app on a phone)
+Claude reads the assigned PDFs, the Canvas posting and the course's knowledge base (below) and writes `Cheat Sheet - <Case>.docx` (+ `.md`, readable in the GitHub app on a phone) into the class-day folder:
+- The discussion questions verbatim, then the case in 90 seconds, the cast and the timeline
+- For each question: a 20-second answer to say first, lettered evidence sub-points with page cites, computed numbers in tables, a discussion-ready synthesis and a contrarian line
+- 8+ likely follow-ups, key concepts by source, "how this connects to earlier classes", and the numbers to have in hand
+
+**Which Claude.** `NOTES_BACKEND=claude-code` (default) runs `claude -p` — Claude Code's headless mode — signed in with a Claude Pro/Max subscription, so the work draws on the plan's allowance rather than API credit. The model reads the PDFs itself from the class folder. Sign in once with `claude` on the Mac; in the cloud, `claude setup-token` gives a one-year token for the `CLAUDE_CODE_OAUTH_TOKEN` secret. A usage limit parks the remaining notes until the next run (`--notes-max` caps a run); a sign-out stops with the re-login command. `NOTES_BACKEND=api` keeps the original per-token Messages API path with `ANTHROPIC_API_KEY`. `NOTES_MODEL` (default `claude-opus-5`) picks the model; `NOTES_STYLE=compact` restores the original 12pt notes format and prompt (`prompts/cheat_sheet_prompt_compact.md`).
+
+Once a class has happened its cheat sheet is frozen: anything that arrives afterwards feeds the course brief and the next class instead.
 
 Notes are regenerated automatically when:
 - The session folder has no Notes file yet
@@ -89,9 +95,35 @@ Notes are regenerated automatically when:
 - The Canvas assignment description changed (professor edited it)
 - The master prompt or course refinement prompt was updated since last generation
 
-All of these are content checks recorded in `.notes_meta.json` (hashes of each posting, each reading, and the prompt) — not file timestamps, which git does not preserve. If a class day has two Canvas postings, both go into one Notes document.
+…and never once the class is past. All of these are content checks recorded in `.notes_meta.json` (hashes of each posting, each reading, and the prompt) — not file timestamps, which git does not preserve. If a class day has two Canvas postings, both go into one Notes document.
 
 **Prompt customization:** Edit `prompts/cheat_sheet_prompt.md` (master prompt applied to all courses) and/or create `prompts/cheat_sheet_prompt_COURSE_refinement.md` for course-specific instructions. Editing a prompt marks all upcoming Notes as stale so they regenerate on the next run.
+
+---
+
+## Course knowledge base (`course_brief.py`)
+
+Every course keeps a **materials shelf** — a folder you already have (`Course Textbook and Materials`, `Course Docs`) is adopted, otherwise `Course Materials/` is created. Canvas course-level files land there; you drop textbook chapters there; it is never reshuffled or deduplicated. In it lives **`Course Brief.md`**, the running memory of the course:
+
+- **About this course** (written once from the syllabus) and **How this professor runs class** (yours to edit — same role as the refinement prompt)
+- **Lenses and frameworks so far** — one block per class that has happened: frameworks introduced and when to use them, takeaways, numbers worth remembering, threads to carry forward, glossary terms. Written by a short Claude call from the cheat sheet, the readings and whatever was posted after class; refreshed only when those inputs change
+- **Threads to carry forward** — rolled up from the class blocks
+- **Materials index** — one line per file on the shelf, summarised once (cached by content hash)
+
+Auto sections are fenced with `<!-- auto:… -->` markers; everything else in the file is yours and is preserved. The sync **looks back three weeks** for post-class material: recent class folders on Canvas, Modules items (files and pages), and Announcements, filed into the class they name (by class number) or onto the shelf, each fetched once (`claude/synced_items.json`).
+
+The next cheat sheet receives the brief, the previous class's bottom lines and post-class files, a peek at the next posting, and the materials index (with paths the model may read), and is asked to apply at least two named lenses from earlier classes. Each course folder also gets a `CLAUDE.md`, and `/course <ABBREV>` in Claude Code loads the same context for ad-hoc work — the equivalent of a per-course Cowork project. `BRIEF_MODEL` (default `claude-sonnet-5`) picks the model for brief updates.
+
+---
+
+## Adopting folders you made by hand (`migrate_folders.py`)
+
+```bash
+./.venv/bin/python scripts/migrate_folders.py --root "~/Library/Mobile Documents/com~apple~CloudDocs/HBS/Classes/2026"          # report
+./.venv/bin/python scripts/migrate_folders.py --root … --map "Fall/Negotiations/Class 3 - Treu Pharma=260910" --apply
+```
+
+`Class 5 - Pave` becomes `260916 Class 5 - Pave (A)` (date and title from the matching Canvas posting — class number first, title similarity as a tiebreak, `--map` to force, `--accept-fuzzy` for title-only matches). Every file is kept; an existing `Cheat Sheet - *.docx` is recorded as that day's notes so nothing regenerates. `Quiz 1`, `Course Docs`, `RH` and the like are listed as KEEP. Run it against the iCloud folder first, then import into the data-repo clone.
 
 ---
 
@@ -101,17 +133,17 @@ Files are routed to canonical locations after every sync. Each file lives in exa
 
 | File type | Destination |
 |-----------|-------------|
-| PPTX / PPT | `COURSE/General/Slides/` (always, even if Canvas attached them to a session) |
-| PDF / DOCX in a session folder | Stays in `COURSE/YYMMDD COURSE/` |
-| PDF / DOCX at course root | `COURSE/General/` if it's a course-level doc (syllabus, schedule, guide…); otherwise `COURSE/General/Supplemental/` |
+| PPTX / PPT | `<materials shelf>/Slides/` (always, even if Canvas attached them to a class) |
+| PDF / DOCX in a class-day folder | Stays in `YYMMDD Class N - Title/` |
+| Anything on the materials shelf | Stays put — the shelf is the course's reference, not something to reshuffle |
 
-Duplicates — same name **and identical content (MD5)**, within one course — are moved to the macOS Trash, or to `COURSEWORK_ROOT/.trash/` where there is no Trash. Same name, different content: a warning is printed and both copies are kept. Nothing outside the course folders is ever touched.
+Duplicates — same name **and identical content (MD5)**, across a course's class-day folders (earliest kept) or between a class folder and `Slides/` — are moved to the macOS Trash, or to `COURSEWORK_ROOT/.trash/` where there is no Trash. Same name, different content: a warning is printed and both copies are kept. The materials shelf, `Quiz*`, `Course Docs` and anything outside the course folders are never touched.
 
 ---
 
 ## Participation Tracker
 
-`participation_tracker.py` creates/refreshes `Participation Tracker.xlsx` at the Coursework root:
+`participation_tracker.py` creates/refreshes one `Participation Tracker.xlsx` per term folder (`Fall/`, `Spring/`); a term whose last class is more than 30 days past is left alone:
 
 - All courses displayed side by side (one column group per course, alphabetical)
 - Each course gets its own color scheme from a six-colour palette
@@ -167,32 +199,36 @@ Prompt templates in `prompts/` are fully editable:
 ## Folder structure
 
 ```
-Coursework/
+Coursework/                              ← one folder per academic year (e.g. HBS/Classes/2026)
   Overview/
-    260831 Overview.docx         ← weekly planning doc (+ .md)
-    260907 Overview.docx
-  LTV - Launching Tech Ventures/ ← "ABBREV - Full Name" for new courses; any folder name works
-    General/
-      Slides/                    ← all PPTX files (always here, never in session folders)
-      Supplemental/              ← non-session-specific PDFs
-    260902 LTV/
-      260902 Rocky Mountain Condiments.pdf   ← HBSP case (auto-downloaded)
-      260902 The idea maze.pdf   ← article (auto-downloaded, printed to PDF)
-      260902 Beachhead Market (YouTube).txt
-      260902 LTV Notes.docx
-      260902 LTV Notes.md        ← same notes, readable anywhere Markdown renders
-      260902 LTV Podcast.m4a
-      .notes_meta.json           ← what the Notes were generated from (hashes)
-    260908 LTV/
-      260908 Ginkgo Bio.pdf
-      260908 Ginkgo Bio (skipped).txt   ← token budget exceeded; file present but excluded from notes
-  CFO - Corporate Financial Operations/
-    ...
+    260831 Overview.docx                 ← weekly planning doc (+ .md)
+  Fall/                                  ← term folder, from Canvas's term name
+    Participation Tracker.xlsx           ← one per term
+    Launching Tech Ventures/             ← full course name (any folder name works; set folder_name in config)
+      CLAUDE.md                          ← context for Claude Code / Cowork in this folder
+      Course Materials/                  ← the shelf (or your own "Course Textbook and Materials")
+        Course Brief.md                  ← the course's running memory
+        Slides/                          ← all PPTX files (always here, never in class folders)
+        Announcements/                   ← Canvas announcements not tied to a class
+      260902 Class 3 - Rocky Mountain Condiments/
+        260902 Rocky Mountain Condiments.pdf   ← HBSP case (auto-downloaded)
+        260902 The idea maze.pdf         ← article (auto-downloaded, printed to PDF)
+        260902 Beachhead Market (YouTube).txt
+        Cheat Sheet - Rocky Mountain Condiments.docx
+        Cheat Sheet - Rocky Mountain Condiments.md   ← same notes, readable anywhere Markdown renders
+        260902 LTV Podcast.m4a
+        260903 Announcement - Class 3 wrap-up.md     ← posted after class; feeds the brief
+        .notes_meta.json                 ← what the notes were generated from (hashes)
+      260908 Class 4 - Ginkgo Bio/
+        260908 Ginkgo Bio.pdf
+        260908 Ginkgo Bio (skipped).txt  ← over the page limit; file present but excluded from notes
+    Corporate Financial Operations/
+      ...
+  Spring/                                ← appears by itself when Canvas publishes the next term
   claude/
-    scripts/                     ← working copies of all scripts (what launchd runs)
-    prompts/                     ← master prompt + per-course refinements
-    canvas_config.json           ← auto-updated: course list, folder paths, cache timestamps
-  Participation Tracker.xlsx
+    canvas_config.json                   ← auto-updated: courses, terms, folder names (abbrev_overrides, term_folders, ignored_courses are yours)
+    canvas.ics                           ← deadlines feed
+    synced_items.json                    ← post-class items already fetched
 ```
 
 ---
@@ -223,17 +259,18 @@ See [`.env.example`](.env.example) for the annotated template.
 | Key | Where it comes from |
 |-----|---------------------|
 | `CANVAS_API_TOKEN` | Canvas → Account → Settings → **+ New Access Token** |
-| `CANVAS_BASE_URL` | Your Canvas domain, e.g. `https://canvas.harvard.edu` — no trailing slash, no `/api/v1` |
-| `ANTHROPIC_API_KEY` | https://console.anthropic.com → Settings → API keys |
+| `CANVAS_BASE_URL` | Your Canvas domain, e.g. `https://hbs.instructure.com` — no trailing slash, no `/api/v1` |
+| `ANTHROPIC_API_KEY` | Only for `NOTES_BACKEND=api`: https://console.anthropic.com → Settings → API keys. The default backend uses your Claude subscription through Claude Code instead. |
 | `COURSEWORK_ROOT` | The folder holding your per-course subfolders, e.g. `~/Desktop/Coursework` |
 
 Every key can also be set as an environment variable, which takes precedence over `.env` — that is how the cloud workflow passes secrets. Optional keys (`CANVAS_CONFIG_FILE`, `CALENDAR_BACKEND`, `PODCAST_MAX_PER_RUN`, `MIRROR_*`) are documented in `.env.example`.
 
-> **An `ANTHROPIC_API_KEY` is not a claude.ai login.** Claude for Education, a
-> Claude Pro subscription, and a claude.ai account are the chat product. This
-> tool uses the developer API, which is billed per token from the Console and
-> is a separate account and separate bill. If your school runs an organization
-> in the Console, ask about joining it before adding a personal card.
+> **Subscription or API?** By default the cheat sheets are written through
+> Claude Code (`claude -p`) with your Claude Pro/Max login — sign in once with
+> `claude` on the Mac (`npm install -g @anthropic-ai/claude-code`). Headless
+> runs count against the plan's 5-hour and weekly allowance like any other use.
+> `NOTES_BACKEND=api` switches to the developer API, billed per token from the
+> Console, if you'd rather keep the subscription for interactive work.
 
 > Courses are auto-discovered from Canvas on the first run. There is no course
 > ID configuration to fill in. Run `./.venv/bin/python scripts/path_config.py --discover`
@@ -327,9 +364,9 @@ Everything except two Mac-only pieces (Calendar.app and the NotebookLM browser l
 
 ```
 ObinnaI/hbs-course-helper   public fork — the code (this repo)
-ObinnaI/hbs-coursework      private — the workflow + every generated file
-~/hbs-coursework            clone of the data repo on the Mac (outside iCloud)
-~/Library/…/2026 HBS/Classes   iCloud folder the mirror job copies into
+ObinnaI/hbs-coursework-2026 private — the workflow + every generated file, one repo per academic year
+~/hbs-coursework-2026       clone of the data repo on the Mac (outside iCloud)
+~/Library/…/HBS/Classes/2026   iCloud folder the mirror job copies into
 ```
 
 The workflow lives in the *data* repo: forks have scheduled workflows off by default and public repos lose schedules after 60 idle days, while the data repo gets a commit every run. It checks out this code repo at `main` and runs `canvas_refresh.py` with:
@@ -341,28 +378,30 @@ The workflow lives in the *data* repo: forks have scheduled workflows off by def
 | `CALENDAR_BACKEND=ics` | write `claude/canvas.ics`; a later step publishes it to a secret Gist |
 | `NOTEBOOKLM_AUTH_JSON` (secret) | the contents of `~/.notebooklm/profiles/default/storage_state.json` after `notebooklm login` |
 
-Secrets: `CANVAS_API_TOKEN`, `ANTHROPIC_API_KEY`, `GIST_TOKEN` (a classic PAT with only the `gist` scope), `NOTEBOOKLM_AUTH_JSON`. Variables: `CANVAS_BASE_URL`, `GIST_ID`, `PODCAST_MAX_PER_RUN`. The full workflow is in the data repo's `.github/workflows/refresh.yml`.
+Secrets: `CANVAS_API_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token` on the Mac; one year), `GIST_TOKEN` (a classic PAT with only the `gist` scope), `NOTEBOOKLM_AUTH_JSON`. Variables: `CANVAS_BASE_URL`, `GIST_ID`, `NOTES_MODEL`, `NOTES_MAX_PER_RUN`, `PODCAST_MAX_PER_RUN`. The full workflow is in the data repo's `.github/workflows/refresh.yml`; it installs Claude Code on the runner and warns when notes were skipped for a login or usage-limit reason, and when the number of courses Canvas returns changes (the January nudge).
 
 **Bootstrap once, locally**, so the first cloud run finds the folder names you want:
 
 ```bash
 ./.venv/bin/python scripts/path_config.py --discover      # with COURSEWORK_ROOT / CANVAS_CONFIG_FILE pointing at ~/hbs-coursework
 # edit ~/hbs-coursework/claude/canvas_config.json (abbrev_overrides, ignored_courses, folder_name), re-run, then commit and push
-gh -R ObinnaI/hbs-coursework workflow run refresh.yml -f mode=daily -f podcasts=false
+gh -R ObinnaI/hbs-coursework-2026 workflow run refresh.yml -f mode=daily -f podcasts=false
 ```
 
 **Podcasts** run in the cloud with the stored login. Google expires that cookie every few weeks; when it does the job logs a warning and writes `claude/podcast_status.json`, the Mac mirror job generates the missing episodes with its own login, and you refresh the secret when convenient:
 
 ```bash
 ./.venv/bin/notebooklm login
-gh -R ObinnaI/hbs-coursework secret set NOTEBOOKLM_AUTH_JSON < ~/.notebooklm/profiles/default/storage_state.json
+gh -R ObinnaI/hbs-coursework-2026 secret set NOTEBOOKLM_AUTH_JSON < ~/.notebooklm/profiles/default/storage_state.json
 ```
 
-**Mac mirror** — `./setup.sh --mirror` installs a launchd job that every 30 minutes (and on login) pushes any ratings you entered in the iCloud copy of the tracker, pulls, rsyncs the clone into `MIRROR_DEST` without deleting anything, and runs the podcast fallback. Log: `~/Library/Logs/hbs-mirror.log`. If it reports `Operation not permitted` on the iCloud path, grant Full Disk Access to `/bin/bash` in System Settings → Privacy & Security.
+**Mac mirror** — `./setup.sh --mirror` installs a launchd job that every 30 minutes (and on login) pushes any ratings you entered in the iCloud trackers and any new file you dropped into a class folder or the materials shelf, pulls, rsyncs the clone into `MIRROR_DEST` without deleting anything, and runs the podcast fallback. Log: `~/Library/Logs/hbs-mirror.log`. If it reports `Operation not permitted` on the iCloud path, grant Full Disk Access to `/bin/bash` in System Settings → Privacy & Security.
 
 **Calendar** — subscribe once (Calendar → File → New Calendar Subscription, location iCloud, refresh hourly) to `https://gist.githubusercontent.com/<user>/<GIST_ID>/raw/canvas.ics`. A secret Gist is unlisted, not private: anyone with the URL can read assignment titles.
 
-**Size** — a term's podcasts are ~1.2 GB and everything else a few hundred MB, all well under GitHub's per-file limits. Start a new data repo each term.
+**Spring and later terms** — when Canvas publishes the next term's courses (mid-January for spring), discovery files them under `Spring/` from the term name, a `Spring/Participation Tracker.xlsx` appears once a class is posted, and courses whose term ended more than 30 days ago stop being polled. The one manual step worth keeping: run `path_config.py --discover`, check the TERM column, and set `abbrev_overrides` before the first cheat sheets are generated (abbreviations are baked into file names and prompt names). `term_folders` / `term_ends` in `canvas_config.json` override a term Canvas names unhelpfully.
+
+**Size** — a term's podcasts are ~1.2 GB and everything else a few hundred MB, all well under GitHub's per-file limits. Start a new data repo each academic year (`hbs-coursework-2027`).
 
 ---
 
