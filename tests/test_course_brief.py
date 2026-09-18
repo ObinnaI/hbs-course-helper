@@ -115,7 +115,8 @@ def test_update_course_writes_blocks_once(course, monkeypatch):
     ask2, calls2 = _fake_ask(["### Class 4 - Equity\n**Lenses and frameworks introduced:** x\n**Key takeaways:**\n- updated\n"])
     monkeypatch.setattr(cb, "_ask", ask2)
     cb.update_course("LTV", info, today=date(2026, 9, 18))
-    assert len(calls2) == 1 and "POST-CLASS FILES ON DISK" in calls2[0][3]
+    assert len(calls2) == 1 and "FILES ON DISK" in calls2[0][3]
+    assert calls2[0][3].count("- Wrap-up slides.pdf") == 1        # listed once, as post-class
     assert "- updated" in cb.brief_path(course).read_text()
 
 

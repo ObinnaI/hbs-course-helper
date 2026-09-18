@@ -346,15 +346,18 @@ def _class_inputs(session_dir: Path, date_str: str) -> "tuple[str, list, str]":
         spine = bottom_lines(text, 6000) if name.endswith(".md") else text[:8000]
         parts.append(f"=== CHEAT SHEET ({name}) — the student's own analysis ===\n{spine}")
         fp.append(hashlib.md5(text.encode()).hexdigest())
-    for f in _post_class_files(session_dir):
+    post_class = _post_class_files(session_dir)
+    for f in post_class:
         fp.append(f.name + canvas_common.file_md5(f))
         if f.suffix.lower() == ".pdf":
             on_disk.append(f)
         else:
             parts.append(f"=== POST-CLASS: {f.name} ===\n{ai_config.extract_text(f)[:20000]}")
+    post_names = {f.name for f in post_class}
     readings = [f for f in sorted(session_dir.iterdir())
                 if f.is_file() and f.suffix.lower() in {".pdf", ".docx", ".pptx"}
-                and not canvas_common.is_notes_file(f.name) and not f.name.startswith("~$")]
+                and not canvas_common.is_notes_file(f.name) and not f.name.startswith("~$")
+                and f.name not in post_names]        # a wrap-up is not a reading
     if readings:
         parts.append("=== READINGS THAT DAY ===\n" + "\n".join(f"- {r.name}" for r in readings))
         # The Read tool handles PDFs; Word and PowerPoint arrive extracted.
