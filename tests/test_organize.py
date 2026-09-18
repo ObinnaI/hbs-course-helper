@@ -72,7 +72,7 @@ def test_cross_course_same_name_untouched(patch_courses, trash):
         "canvas_id": 2, "full_name": "CFO", "folder_name": "CFO",
         "folder_path": cfo, "refinement_prompt": None,
     }
-    a = _write(root / "LTV" / "General" / "Citation Guide.pdf", b"same")
+    a = _write(patch_courses["courses"]["LTV"]["folder_path"] / "General" / "Citation Guide.pdf", b"same")
     b = _write(cfo / "General" / "Citation Guide.pdf", b"same")
 
     assert co.dedup_to_trash(verbose=False) == 0
@@ -93,6 +93,15 @@ def test_dotfiles_and_trash_dir_are_ignored(patch_courses, trash, monkeypatch):
     # A second pass must not re-trash the copy now sitting in .trash/.
     assert co.dedup_to_trash(verbose=False) == 0
     assert keep.exists()
+
+
+def test_dedup_ignores_protected_subfolders(patch_courses, trash):
+    ltv = patch_courses["courses"]["LTV"]["folder_path"]
+    keep = _write(ltv / "260909 Class 4 - Equity" / "Six Challenges.pdf", b"same")
+    also = _write(ltv / "Course Textbook and Materials" / "Six Challenges.pdf", b"same")
+    quiz = _write(ltv / "Quiz 1" / "Six Challenges.pdf", b"same")
+    assert co.dedup_to_trash(verbose=False) == 0
+    assert keep.exists() and also.exists() and quiz.exists()
 
 
 def test_refuses_home_root(patch_courses, trash, monkeypatch):

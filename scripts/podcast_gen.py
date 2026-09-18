@@ -75,20 +75,30 @@ async def _generate(date_str: str, abbrev: str):
     from notebooklm import NotebookLMClient
 
     course_folder = _COURSES.get(abbrev, {}).get("folder_path") or DEST_ROOT / abbrev
-    session_dir   = course_folder / f"{date_str} {abbrev}"
-    session_label = f"{date_str} {abbrev}"
-    podcast_file  = session_dir / f"{session_label} Podcast.m4a"
+    session_label = _cc.artifact_stem(date_str, abbrev)   # NotebookLM notebook title
 
-    if podcast_file.exists():
-        print(f"Already exists: {podcast_file}")
+    # The folder is found by its date; if it doesn't exist yet its name needs
+    # the Canvas posting, so that is fetched before anything else.
+    session_dir = _cc.find_session_dir(course_folder, date_str)
+    if session_dir is not None and _cc.podcast_path(session_dir, date_str, abbrev).exists():
+        print(f"Already exists: {_cc.podcast_path(session_dir, date_str, abbrev)}")
         return
 
+    course_id = COURSE_IDS[abbrev]
+    print("Fetching Canvas assignment...", end=" ", flush=True)
+    assignments = _cr.assignments_on(course_id, date_str)
+    print("found: " + "; ".join(a["name"] for a in assignments) if assignments else "not found")
+
+    if session_dir is None:
+        session_dir = course_folder / _cc.session_dirname(date_str, abbrev, assignments)
+    podcast_file = _cc.podcast_path(session_dir, date_str, abbrev)
     session_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Reading files ──────────────────────────────────────────────────────────
     reading_files = sorted(
         (f for f in session_dir.iterdir()
-         if f.is_file() and f.suffix.lower() in _cr.READING_EXTS and "Notes" not in f.name
+         if f.is_file() and f.suffix.lower() in _cr.READING_EXTS
+         and not _cc.is_notes_file(f.name)
          and f.suffix.lower() != ".m4a"
          # "(skipped)" stubs say a reading was left out — uploading one as a
          # source tells the hosts about a file they cannot see. "~$" files are
@@ -118,12 +128,6 @@ async def _generate(date_str: str, abbrev: str):
     print(f"Readings ({len(reading_files)}):")
     for f in reading_files:
         print(f"  • {f.name}")
-
-    # ── Canvas assignment (for discussion questions) ────────────────────────────
-    course_id  = COURSE_IDS[abbrev]
-    print("Fetching Canvas assignment...", end=" ", flush=True)
-    assignments = _cr.assignments_on(course_id, date_str)
-    print("found: " + "; ".join(a["name"] for a in assignments) if assignments else "not found")
 
     if not reading_files and not assignments:
         sys.exit("No readings and no Canvas assignment — nothing to generate from.")

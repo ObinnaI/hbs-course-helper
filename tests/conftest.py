@@ -39,8 +39,8 @@ path_config._find_env_file = lambda *a, **k: None
 @pytest.fixture
 def fake_paths(tmp_path):
     """A resolve()-shaped dict with one course, LTV, rooted in tmp_path."""
-    course_dir = tmp_path / "LTV"
-    course_dir.mkdir()
+    course_dir = tmp_path / "Fall" / "LTV"
+    course_dir.mkdir(parents=True)
     return {
         "canvas_base":     "https://example.test/api/v1",
         "env_file":        None,
@@ -51,9 +51,11 @@ def fake_paths(tmp_path):
             "LTV": {
                 "canvas_id":         1,
                 "full_name":         "Launching Tech Ventures",
-                "folder_name":       "LTV",
+                "folder_name":       "Fall/LTV",
                 "folder_path":       course_dir,
                 "refinement_prompt": None,
+                "term":              "Fall",
+                "term_end":          None,
             },
         },
     }

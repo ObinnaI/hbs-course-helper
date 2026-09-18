@@ -19,6 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import path_config
 import canvas_refresh as cr
+import canvas_common
 from canvas_common import classify_submission as _classify
 
 _paths    = path_config.resolve()
@@ -41,12 +42,12 @@ def _week_window() -> tuple[datetime, datetime]:
     return week_start, week_start + timedelta(days=7)
 
 
-def _count_pages(session_dir: Path) -> int:
+def _count_pages(session_dir: "Path | None") -> int:
     total = 0
-    if not session_dir.exists():
+    if session_dir is None or not session_dir.exists():
         return 0
     for f in session_dir.iterdir():
-        if f.suffix.lower() == ".pdf" and "Notes" not in f.name:
+        if f.suffix.lower() == ".pdf" and not canvas_common.is_notes_file(f.name):
             total += cr.pdf_page_count(f)
     return total
 
@@ -114,7 +115,7 @@ def generate(week_start: datetime | None = None) -> Path:
 
             if kind == "session":
                 date_str    = dt.strftime("%y%m%d")
-                session_dir = info["folder_path"] / f"{date_str} {abbrev}"
+                session_dir = canvas_common.find_session_dir(info["folder_path"], date_str)
                 pages       = _count_pages(session_dir)
                 by_day[day]["sessions"].append((dt, abbrev, _short_name(name, abbrev), pages))
             elif kind == "deliverable":

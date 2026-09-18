@@ -27,6 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import canvas_refresh as cr
+import canvas_common
 
 
 def main():
@@ -49,7 +50,8 @@ def main():
         print("not found (will rely on readings only)")
 
     course_folder = cr._COURSES.get(abbrev, {}).get("folder_path") or cr.DEST_ROOT / abbrev
-    session_dir   = course_folder / f"{date_str} {abbrev}"
+    session_dir   = canvas_common.session_dir_for(course_folder, date_str, abbrev,
+                                                  session["assignments"])
     print(f"Session folder: {session_dir}")
     readings = cr._reading_files(session_dir)
     print(f"Readings found: {len(readings)}")
@@ -62,7 +64,8 @@ def main():
     print(f"\nCalling Claude ({cr.MODEL})...", flush=True)
     cr.generate_notes(session)
 
-    output_file = session_dir / f"{date_str} {abbrev} Notes.docx"
+    output_file = canvas_common.notes_paths(
+        session_dir, date_str, abbrev, canvas_common.session_title(session["assignments"])).docx
     print(f"\n✅ Saved: {output_file}")
     print(f"   Open: open '{output_file}'")
 

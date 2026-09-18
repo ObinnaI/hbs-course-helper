@@ -36,6 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import path_config
+import canvas_common
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -438,8 +439,10 @@ def sync_reading_links(assignment: dict, session_dir: Path) -> int:
     if not actionable:
         return 0
 
-    # Extract date from session folder name: "260902 LME" → "260902"
-    date_str = session_dir.name[:6]
+    # The date prefix is the session folder's key: "260902 Class 3 - Ginkgo" → "260902"
+    date_str = canvas_common.session_date(session_dir.name)
+    if date_str is None:
+        raise ValueError(f"not a session folder: {session_dir}")
 
     session_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -570,7 +573,7 @@ def rename_session_files(assignment: dict, date_str: str, session_dir: Path) -> 
             continue
         if f.name.startswith('.') or f.suffix.lower() in skip_suffixes:
             continue
-        if any(p in f.name for p in skip_patterns):
+        if any(p in f.name for p in skip_patterns) or canvas_common.is_notes_file(f.name):
             continue
         if f.stem.startswith(date_str):
             continue
@@ -614,8 +617,8 @@ def main():
                 if not a.get("due_at"):
                     continue
                 date_str    = _cr.yymmdd(_cr.boston_date(a["due_at"]))
-                session_dir = course_folder / f"{date_str} {abbrev}"
-                if not session_dir.exists():
+                session_dir = canvas_common.find_session_dir(course_folder, date_str)
+                if session_dir is None:
                     continue
                 n = rename_session_files(a, date_str, session_dir)
                 if n:
@@ -656,7 +659,7 @@ def main():
         return
 
     course_folder = _courses[abbrev].get("folder_path") or _paths["coursework_root"] / abbrev
-    session_dir   = course_folder / f"{date_str} {abbrev}"
+    session_dir   = canvas_common.session_dir_for(course_folder, date_str, abbrev, assignments)
 
     print(f"\nReading sync: {abbrev} {date_str}")
     n = sum(sync_reading_links(a, session_dir) for a in assignments)

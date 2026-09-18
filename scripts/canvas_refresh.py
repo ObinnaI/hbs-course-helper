@@ -180,9 +180,7 @@ def _write_skip_stub(reading_file: Path, reason: str) -> None:
         )
 
 
-def safe_name(s: str) -> str:
-    s = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", s)
-    return re.sub(r"-{2,}", "-", s).strip(". -")[:200]
+safe_name = canvas_common.safe_name
 
 def boston_date(iso: str) -> datetime:
     return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(BOSTON)
@@ -226,9 +224,7 @@ def strip_html(html: str) -> str:
         text = text.replace(ent, rep)
     return re.sub(r"[ \t]+", " ", text).strip()
 
-def class_number(text: str) -> int | None:
-    m = re.search(r"\bclass\s+(\d+)\b", text, re.IGNORECASE)
-    return int(m.group(1)) if m else None
+class_number = canvas_common.class_number
 
 # ── Session discovery ─────────────────────────────────────────────────────────
 
@@ -368,7 +364,7 @@ def sync_course_files(course_id: int, abbrev: str, target_date_str: str | None =
     _placed: set[str] = set()
     if course_folder.exists():
         for d in course_folder.iterdir():
-            if d.is_dir() and re.match(r'^\d{6}\s', d.name):
+            if canvas_common.is_session_dir(d):
                 _placed.update(f2.name for f2 in d.iterdir() if f2.is_file())
         for subdir_name in ("Slides", "Supplemental"):
             subdir = general_dir / subdir_name
@@ -395,9 +391,12 @@ def sync_course_files(course_id: int, abbrev: str, target_date_str: str | None =
 
     # Targeted: sync files for the specific session. Only class postings — a
     # quiz due the same day must not pull its attachments into the class folder.
-    for a in assignments_on(course_id, target_date_str):
-        session_dir = course_folder / f"{target_date_str} {abbrev}"
-        session_dir.mkdir(parents=True, exist_ok=True)
+    assignments = assignments_on(course_id, target_date_str)
+    if not assignments:
+        return
+    session_dir = canvas_common.session_dir_for(course_folder, target_date_str, abbrev, assignments)
+    session_dir.mkdir(parents=True, exist_ok=True)
+    for a in assignments:
         cn = class_number(a.get("name", ""))
 
         # Per-class Canvas folder
@@ -589,7 +588,8 @@ def _reading_files(session_dir: Path) -> list[Path]:
     return sorted(
         (f for f in session_dir.iterdir()
          if f.is_file() and f.suffix.lower() in READING_EXTS
-         and "Notes" not in f.name and "(skipped)" not in f.name
+         and not canvas_common.is_notes_file(f.name)   # a cheat sheet is not a reading
+         and "(skipped)" not in f.name
          and not f.name.startswith("~$")),          # Word lock files
         key=lambda f: (-f.stat().st_size if f.suffix.lower() == ".pdf" else 0, f.name),
     )
@@ -670,17 +670,19 @@ def _mtime_stale(notes_file: Path, session_dir: Path, abbrev: str,
 
 def notes_are_stale(session_dir: Path, abbrev: str, date_str: str,
                     canvas_hashes: dict | None = None,
-                    skip_prompt_regen: bool = False) -> tuple[bool, str]:
+                    skip_prompt_regen: bool = False,
+                    title: str = "") -> tuple[bool, str]:
     """
     Returns (should_regenerate, reason).
 
-    Stale when: no Notes .docx; a Canvas posting's description changed; the
-    set of reading files or any file's content changed; or (unless
+    Stale when: no notes document; a Canvas posting's description changed;
+    the set of reading files or any file's content changed; or (unless
     skip_prompt_regen) the master/refinement prompt changed. Nothing here
-    looks at modification times.
+    looks at modification times. A hand-made "Cheat Sheet - X.docx" counts
+    as the notes (see canvas_common.notes_paths).
     """
-    notes_file = session_dir / f"{date_str} {abbrev} Notes.docx"
-    if not notes_file.exists():
+    notes_file = canvas_common.notes_paths(session_dir, date_str, abbrev, title).existing
+    if notes_file is None:
         return True, "no Notes file yet"
 
     meta = _read_notes_meta(session_dir)
@@ -730,9 +732,10 @@ def generate_notes(session: dict):
     date_str  = session["date_str"]
     assignments = _session_assignments(session)
     course_folder = (_COURSES.get(abbrev, {}).get("folder_path") or DEST_ROOT / abbrev)
-    session_dir = course_folder / f"{date_str} {abbrev}"
-    output_file = session_dir / f"{date_str} {abbrev} Notes.docx"
-    md_file     = session_dir / f"{date_str} {abbrev} Notes.md"
+    session_dir = canvas_common.session_dir_for(course_folder, date_str, abbrev, assignments)
+    np = canvas_common.notes_paths(session_dir, date_str, abbrev,
+                                   canvas_common.session_title(assignments))
+    output_file, md_file = np.docx, np.md
 
     session_dir.mkdir(parents=True, exist_ok=True)
 
@@ -890,6 +893,7 @@ def generate_notes(session: dict):
         "assignments":       session_hashes(session),
         "prompt_hash":       prompt_hash(abbrev),
         "readings":          readings_fingerprint(session_dir),
+        "notes_file":        output_file.name,
         "generated":         metadata["Generated"],
         "canvas":            [a.get("name", "") for a in assignments],
         "readings_included": included,
@@ -954,8 +958,9 @@ def generate_podcast_for_session(session: dict):
     abbrev    = session["abbrev"]
     date_str  = session["date_str"]
     course_folder = (_COURSES.get(abbrev, {}).get("folder_path") or DEST_ROOT / abbrev)
-    session_dir   = course_folder / f"{date_str} {abbrev}"
-    podcast_file  = session_dir / f"{date_str} {abbrev} Podcast.m4a"
+    session_dir   = canvas_common.session_dir_for(course_folder, date_str, abbrev,
+                                                  _session_assignments(session))
+    podcast_file  = canvas_common.podcast_path(session_dir, date_str, abbrev)
 
     if podcast_file.exists():
         print(f"    ✓ Podcast exists: {podcast_file.name}")
@@ -991,7 +996,9 @@ def generate_podcast_for_session(session: dict):
 
 def _podcast_path(s: dict) -> Path:
     folder = (_COURSES.get(s["abbrev"], {}).get("folder_path") or DEST_ROOT / s["abbrev"])
-    return folder / f"{s['date_str']} {s['abbrev']}" / f"{s['date_str']} {s['abbrev']} Podcast.m4a"
+    session_dir = canvas_common.session_dir_for(folder, s["date_str"], s["abbrev"],
+                                                _session_assignments(s))
+    return canvas_common.podcast_path(session_dir, s["date_str"], s["abbrev"])
 
 
 def _write_podcast_status(pending: list[dict]) -> None:
@@ -1128,7 +1135,7 @@ def run_daily(skip_prompt_regen: bool = False, with_podcast: bool = False,
         sync_course_files(s["course_id"], abbrev, target_date_str=date_str)
 
         course_folder = (_COURSES.get(abbrev, {}).get("folder_path") or DEST_ROOT / abbrev)
-        session_dir = course_folder / f"{date_str} {abbrev}"
+        session_dir = canvas_common.session_dir_for(course_folder, date_str, abbrev, s["assignments"])
         n_read = sum(canvas_readings.sync_reading_links(a, session_dir)
                      for a in s["assignments"])
         if n_read:
@@ -1137,6 +1144,7 @@ def run_daily(skip_prompt_regen: bool = False, with_podcast: bool = False,
         stale, reason = notes_are_stale(
             session_dir, abbrev, date_str,
             canvas_hashes=session_hashes(s), skip_prompt_regen=skip_prompt_regen,
+            title=canvas_common.session_title(s["assignments"]),
         )
         if stale:
             print(f"    → Regenerating Notes ({reason})")
@@ -1198,7 +1206,7 @@ def run_weekly(skip_prompt_regen: bool = False, with_podcast: bool = False,
         date_str = s["date_str"]
         label    = s["assignment"].get("name", f"{date_str} {abbrev}")[:60]
         course_folder = (_COURSES.get(abbrev, {}).get("folder_path") or DEST_ROOT / abbrev)
-        session_dir = course_folder / f"{date_str} {abbrev}"
+        session_dir = canvas_common.session_dir_for(course_folder, date_str, abbrev, s["assignments"])
 
         if s["due_dt"] > notes_cutoff:
             print(f"  [{date_str}] {abbrev} — files only (>2 weeks out)")
@@ -1215,6 +1223,7 @@ def run_weekly(skip_prompt_regen: bool = False, with_podcast: bool = False,
         stale, reason = notes_are_stale(
             session_dir, abbrev, date_str,
             canvas_hashes=session_hashes(s), skip_prompt_regen=skip_prompt_regen,
+            title=canvas_common.session_title(s["assignments"]),
         )
         if stale:
             print(f"    → Regenerating Notes ({reason})")

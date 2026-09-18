@@ -38,10 +38,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import path_config
+import canvas_common
 from canvas_common import same_content
 
 COURSEWORK_ROOT = path_config.COURSEWORK_ROOT
-SESSION_RE = re.compile(r'^\d{6}\s')
+SESSION_RE = canvas_common.SESSION_RE
 
 SLIDE_EXTS = {'.pptx', '.ppt'}
 
@@ -305,9 +306,13 @@ def dedup_to_trash(verbose: bool = True) -> int:
             if not f.is_file():
                 continue
             rel = f.relative_to(course_dir).parts
-            # Hidden files (.notes_meta.json), the .trash/ folder itself, and a
-            # co-located claude/ scripts folder are never candidates.
-            if any(part.startswith(".") or part == "claude" for part in rel):
+            # Hidden files (.notes_meta.json) and the .trash/ folder are never
+            # candidates; nor is anything outside a class-day folder or General/
+            # — the user's own "Course Textbook and Materials", "Quiz 1", etc.
+            # legitimately hold copies of readings and must be left alone.
+            if any(part.startswith(".") for part in rel):
+                continue
+            if len(rel) < 2 or not (SESSION_RE.match(rel[0]) or rel[0] == "General"):
                 continue
             by_name[f.name].append(f)
 

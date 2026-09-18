@@ -33,6 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import path_config
+import canvas_common
 from canvas_common import classify_submission
 
 _paths       = path_config.resolve()
@@ -102,17 +103,7 @@ def col_letter(n: int) -> str:
     return result
 
 
-def extract_case_title(name: str) -> str:
-    """
-    Strip 'COURSE | Class N: ' boilerplate, return the case/topic title.
-    e.g. "CFO | Class 3: The DCF Method" → "The DCF Method"
-    """
-    m = re.search(r"class\s+\d+\s*[:\-]\s*(.*)", name, re.IGNORECASE)
-    if m and m.group(1).strip():
-        return m.group(1).strip()
-    if "|" in name:
-        return name.split("|")[-1].strip()
-    return name.strip()
+extract_case_title = canvas_common.extract_case_title
 
 
 # ── Session data ──────────────────────────────────────────────────────────────

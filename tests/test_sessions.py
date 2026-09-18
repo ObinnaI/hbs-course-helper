@@ -32,15 +32,24 @@ def _due(hours_ahead: float) -> str:
     return dt.astimezone(cr.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _assignment(aid, name, sub_types, hours_ahead=20, desc="<p>q</p>"):
+def _due_tomorrow(hour: int) -> str:
+    """A fixed clock time tomorrow (Boston), so two postings share a day
+    whatever time of day the suite runs."""
+    dt = (datetime.now(tz=cr.BOSTON) + timedelta(days=1)).replace(
+        hour=hour, minute=0, second=0, microsecond=0)
+    return dt.astimezone(cr.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _assignment(aid, name, sub_types, hours_ahead=None, desc="<p>q</p>", hour=None):
+    due = _due(hours_ahead) if hours_ahead is not None else _due_tomorrow(hour or 10)
     return {"id": aid, "name": name, "submission_types": sub_types,
-            "due_at": _due(hours_ahead), "description": desc}
+            "due_at": due, "description": desc}
 
 
 def test_quiz_on_class_day_is_not_a_session(patch_courses, monkeypatch, capsys):
     posts = [
-        _assignment(1, "LTV | Class 3 | Ginkgo", ["not_graded"], hours_ahead=20),
-        _assignment(2, "Quiz 1", ["online_quiz"], hours_ahead=21),
+        _assignment(1, "LTV | Class 3 | Ginkgo", ["not_graded"], hour=10),
+        _assignment(2, "Quiz 1", ["online_quiz"], hour=12),
     ]
     monkeypatch.setattr(cr, "canvas_get", lambda *a, **k: posts)
 
@@ -58,8 +67,8 @@ def test_quiz_on_class_day_is_not_a_session(patch_courses, monkeypatch, capsys):
 
 def test_two_class_postings_same_day_merge(patch_courses, monkeypatch):
     posts = [
-        _assignment(2, "Class 4 (afternoon)", ["not_graded"], hours_ahead=22),
-        _assignment(1, "Class 3 (morning)", ["not_graded"], hours_ahead=20),
+        _assignment(2, "Class 4 (afternoon)", ["not_graded"], hour=14),
+        _assignment(1, "Class 3 (morning)", ["not_graded"], hour=9),
     ]
     monkeypatch.setattr(cr, "canvas_get", lambda *a, **k: posts)
 
@@ -74,7 +83,7 @@ def test_past_and_far_future_excluded(patch_courses, monkeypatch):
     posts = [
         _assignment(1, "yesterday", ["not_graded"], hours_ahead=-5),
         _assignment(2, "next month", ["not_graded"], hours_ahead=24 * 30),
-        _assignment(3, "tomorrow", ["not_graded"], hours_ahead=20),
+        _assignment(3, "tomorrow", ["not_graded"], hour=10),
     ]
     monkeypatch.setattr(cr, "canvas_get", lambda *a, **k: posts)
     assert [s["assignment"]["id"] for s in cr.get_upcoming_sessions(2)] == [3]
