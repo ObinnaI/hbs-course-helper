@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import path_config
 import ai_config
 import canvas_common
+import notes_backend
 import canvas_organize
 import canvas_readings
 import weekly_overview
@@ -62,7 +63,7 @@ CANVAS_BASE = _paths["canvas_base"]
 BOSTON = ZoneInfo("America/New_York")
 MODEL  = ai_config.MODEL
 
-READING_EXTS = {".pdf", ".docx", ".pptx", ".doc", ".ppt", ".txt"}
+READING_EXTS = {".pdf", ".docx", ".pptx", ".doc", ".ppt", ".txt", ".xlsx", ".csv", ".md"}
 SLIDE_EXTS   = {".pptx", ".ppt"}   # always routed to General/Slides/
 
 # PDF budget. Token cost is measured with the free count_tokens endpoint rather
@@ -436,122 +437,210 @@ def sync_course_files(course_id: int, abbrev: str, target_date_str: str | None =
                     print(f"    ↓ [linked] {f['display_name']}")
 
 # ── Markdown → docx conversion ───────────────────────────────────────────────
+#
+# Two looks, chosen by NOTES_STYLE:
+#   cheatsheet  (default) Times New Roman 10pt, dark-blue headings with a rule
+#               under H1, centred title block — the format of the hand-made
+#               cheat sheets this tool took over from
+#   compact     the original 12pt Calibri-style notes
 
-def _parse_inline(para, text: str) -> None:
-    """Add runs to a paragraph with **bold** and *italic* applied. Always 12pt."""
-    from docx.shared import Pt
-    for seg in re.split(r'(\*\*[^*]+\*\*|\*[^*]+\*)', text):
-        if seg.startswith('**') and seg.endswith('**'):
-            r = para.add_run(seg[2:-2])
+_STYLES = {
+    "cheatsheet": dict(font="Times New Roman", size=10, accent="1F4E79",
+                       subtitle="444444", meta="666666", margins=1.0,
+                       h1_size=11, h2_size=10, h3_size=10, title_block=True),
+    "compact":    dict(font=None, size=12, accent=None,
+                       subtitle=None, meta=None, margins=1.25,
+                       h1_size=14, h2_size=13, h3_size=12, title_block=False),
+}
+
+
+def notes_style() -> dict:
+    name = (cfg("NOTES_STYLE") or "cheatsheet").strip().lower()
+    return _STYLES.get(name, _STYLES["cheatsheet"])
+
+
+def _style_run(r, st: dict, size: "int | None" = None, color: "str | None" = None) -> None:
+    from docx.shared import Pt, RGBColor
+    if st["font"]:
+        r.font.name = st["font"]
+    r.font.size = Pt(size or st["size"])
+    if color:
+        r.font.color.rgb = RGBColor.from_string(color)
+
+
+def _parse_inline(para, text: str, st: dict, size: "int | None" = None,
+                  color: "str | None" = None, bold_all: bool = False) -> None:
+    """Add runs to a paragraph with **bold**, *italic* and `code` applied."""
+    for seg in re.split(r'(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)', text):
+        if not seg:
+            continue
+        if seg.startswith('**') and seg.endswith('**') and len(seg) > 4:
+            r = para.add_run(seg[2:-2]); r.bold = True
+        elif seg.startswith('*') and seg.endswith('*') and len(seg) > 2:
+            r = para.add_run(seg[1:-1]); r.italic = True
+        elif seg.startswith('`') and seg.endswith('`') and len(seg) > 2:
+            r = para.add_run(seg[1:-1]); r.font.name = "Courier New"
+        else:
+            r = para.add_run(seg)
+        if bold_all:
             r.bold = True
-            r.font.size = Pt(12)
-        elif seg.startswith('*') and seg.endswith('*'):
-            r = para.add_run(seg[1:-1])
-            r.italic = True
-            r.font.size = Pt(12)
-        elif seg:
-            para.add_run(seg).font.size = Pt(12)
+        _style_run(r, st, size, color)
 
 
-def _tight(para) -> None:
-    """Enforce 12pt font and tight spacing on a paragraph."""
+def _tight(para, after: int = 6, before: int = 0) -> None:
     from docx.shared import Pt
     pf = para.paragraph_format
-    pf.space_before = Pt(0)
-    pf.space_after  = Pt(6)
+    pf.space_before = Pt(before)
+    pf.space_after  = Pt(after)
+
+
+def _bottom_border(para, color: str, size: str = "6") -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    pPr = para._p.get_or_add_pPr()
+    pBdr = OxmlElement('w:pBdr')
+    bottom = OxmlElement('w:bottom')
+    bottom.set(qn('w:val'), 'single')
+    bottom.set(qn('w:sz'), size)
+    bottom.set(qn('w:space'), '1')
+    bottom.set(qn('w:color'), color)
+    pBdr.append(bottom)
+    pPr.append(pBdr)
+
+
+def _table_rows(lines: list, start: int) -> "tuple[list, int]":
+    """Consume a pipe table starting at lines[start]; return (rows, next_index)."""
+    rows = []
+    i = start
+    while i < len(lines) and lines[i].strip().startswith("|"):
+        cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+        if not all(re.fullmatch(r":?-{2,}:?", c) for c in cells if c):   # the |---| row
+            rows.append(cells)
+        i += 1
+    return rows, i
+
+
+def _add_table(doc, rows: list, st: dict) -> None:
+    ncols = max(len(r) for r in rows)
+    table = doc.add_table(rows=0, cols=ncols)
+    table.style = "Table Grid"
+    for ri, row in enumerate(rows):
+        cells = table.add_row().cells
+        for ci in range(ncols):
+            text = row[ci] if ci < len(row) else ""
+            para = cells[ci].paragraphs[0]
+            _parse_inline(para, text, st, size=max(st["size"] - 1, 8), bold_all=(ri == 0))
+            _tight(para, after=0)
+    doc.add_paragraph()
 
 
 def markdown_to_docx(md_text: str, output_path: Path,
-                     title: str, metadata: dict) -> None:
+                     title: str, metadata: dict, style: "dict | None" = None) -> None:
     """Convert Claude's markdown output → formatted .docx file."""
     try:
         from docx import Document
-        from docx.shared import Inches, Pt
-        from docx.oxml import OxmlElement
-        from docx.oxml.ns import qn
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.shared import Inches, Pt, RGBColor
     except ImportError:
-        sys.exit("python-docx not installed — run: uv pip install python-docx")
+        sys.exit("python-docx not installed — run: pip install python-docx")
 
+    st = style or notes_style()
     doc = Document()
 
-    # Force 12pt + tight spacing on all built-in styles up front
     for style_name in ('Normal', 'Title', 'Heading 1', 'Heading 2', 'Heading 3',
                        'List Bullet', 'List Bullet 2', 'List Number'):
         try:
-            st = doc.styles[style_name]
-            st.font.size = Pt(12)
-            st.paragraph_format.space_before = Pt(0)
-            st.paragraph_format.space_after  = Pt(6)
+            s_ = doc.styles[style_name]
+            if st["font"]:
+                s_.font.name = st["font"]
+            s_.font.size = Pt(st["size"])
+            s_.paragraph_format.space_before = Pt(0)
+            s_.paragraph_format.space_after  = Pt(6)
         except KeyError:
             pass
 
-    # Margins: 1.25 in sides, 1 in top/bottom
     for section in doc.sections:
         section.top_margin    = Inches(1)
         section.bottom_margin = Inches(1)
-        section.left_margin   = Inches(1.25)
-        section.right_margin  = Inches(1.25)
+        section.left_margin   = Inches(st["margins"])
+        section.right_margin  = Inches(st["margins"])
 
-    # Title
-    p = doc.add_heading(title, level=0)
-    _tight(p)
-
-    # Metadata block
-    for key, val in metadata.items():
-        p = doc.add_paragraph()
-        r = p.add_run(f"{key}: ")
-        r.bold = True
-        r.font.size = Pt(12)
-        p.add_run(val).font.size = Pt(12)
-        _tight(p)
-
-    for line in md_text.split('\n'):
-        s = line.rstrip()
-
-        if not s:
-            continue
-        elif s.startswith('### '):
-            p = doc.add_heading(level=3)
-            _parse_inline(p, s[4:])
+    # Title block
+    if st["title_block"]:
+        p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        r = p.add_run("Case Discussion Preparation"); r.bold = True
+        _style_run(r, st, size=st["size"] + 2, color=st["accent"]); _tight(p, after=2)
+        p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        r = p.add_run(title); r.bold = True
+        _style_run(r, st, size=st["size"] + 1, color=st["subtitle"]); _tight(p, after=2)
+        for key, val in metadata.items():
+            p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            r = p.add_run(f"{key}: {val}"); r.italic = True
+            _style_run(r, st, color=st["meta"]); _tight(p, after=0)
+        p = doc.add_paragraph(); _bottom_border(p, st["accent"]); _tight(p, after=8)
+    else:
+        p = doc.add_heading(title, level=0); _tight(p)
+        for key, val in metadata.items():
+            p = doc.add_paragraph()
+            r = p.add_run(f"{key}: "); r.bold = True; _style_run(r, st)
+            r = p.add_run(val); _style_run(r, st)
             _tight(p)
+
+    lines = md_text.split('\n')
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        s = line.rstrip()
+        i += 1
+
+        if not s.strip():
+            continue
+        if s.strip().startswith('|'):
+            rows, i = _table_rows(lines, i - 1)
+            if rows:
+                _add_table(doc, rows, st)
+            continue
+        if s.startswith('# '):
+            # The model repeats the title as its first H1; the title block already has it.
+            if st["title_block"] and s[2:].strip().lower().startswith("cheat sheet"):
+                continue
+            p = doc.add_heading(level=1)
+            _parse_inline(p, s[2:], st, size=st["h1_size"], color=st["accent"], bold_all=True)
+            if st["accent"]:
+                _bottom_border(p, st["accent"])
+            _tight(p, after=6, before=10)
         elif s.startswith('## '):
             p = doc.add_heading(level=2)
-            _parse_inline(p, s[3:])
+            _parse_inline(p, s[3:], st, size=st["h2_size"], color=st["accent"], bold_all=True)
+            _tight(p, after=4, before=8)
+        elif s.startswith('### '):
+            p = doc.add_heading(level=3)
+            _parse_inline(p, s[4:], st, size=st["h3_size"], bold_all=True)
+            _tight(p, after=3, before=6)
+        elif re.match(r'^[-*_]{3,}$', s.strip()):
+            p = doc.add_paragraph(); _bottom_border(p, "AAAAAA", "4"); _tight(p)
+        elif s.startswith('> '):
+            p = doc.add_paragraph(style='Normal')
+            p.paragraph_format.left_indent = Inches(0.3)
+            _parse_inline(p, s[2:], st)
+            for r in p.runs:
+                r.italic = True
             _tight(p)
-        elif s.startswith('# '):
-            p = doc.add_heading(level=1)
-            _parse_inline(p, s[2:])
-            _tight(p)
-        elif re.match(r'^[-*_]{3,}$', s):
-            # Horizontal rule via paragraph bottom border
-            p = doc.add_paragraph()
-            pPr = p._p.get_or_add_pPr()
-            pBdr = OxmlElement('w:pBdr')
-            bottom = OxmlElement('w:bottom')
-            bottom.set(qn('w:val'), 'single')
-            bottom.set(qn('w:sz'), '6')
-            bottom.set(qn('w:space'), '1')
-            bottom.set(qn('w:color'), 'AAAAAA')
-            pBdr.append(bottom)
-            pPr.append(pBdr)
-            _tight(p)
-        elif re.match(r'^    [-*] |^  [-*] ', line):
+        elif re.match(r'^    [-*+] |^  [-*+] ', line):
             p = doc.add_paragraph(style='List Bullet 2')
-            _parse_inline(p, s.lstrip('*- \t'))
-            _tight(p)
-        elif s.startswith('- ') or s.startswith('* '):
+            _parse_inline(p, s.lstrip('*-+ \t'), st); _tight(p, after=2)
+        elif re.match(r'^[-*+] ', s):
             p = doc.add_paragraph(style='List Bullet')
-            _parse_inline(p, s[2:])
-            _tight(p)
-        elif re.match(r'^\d+\. ', s):
+            _parse_inline(p, s[2:], st); _tight(p, after=2)
+        elif re.match(r'^\d+[.)] ', s):
             p = doc.add_paragraph(style='List Number')
-            _parse_inline(p, re.sub(r'^\d+\. ', '', s))
-            _tight(p)
+            _parse_inline(p, re.sub(r'^\d+[.)] ', '', s), st); _tight(p, after=2)
         else:
             p = doc.add_paragraph(style='Normal')
-            _parse_inline(p, s)
-            _tight(p)
+            _parse_inline(p, s, st); _tight(p)
 
+    for section in doc.sections:   # python-docx needs the font on the East-Asian slot too
+        pass
     doc.save(str(output_path))
 
 
@@ -763,14 +852,12 @@ def generate_notes(session: dict):
         print(f"    ⚠ Nothing to generate for {date_str} {abbrev} — skipping")
         return
 
-    # Build message content
-    try:
-        import anthropic as ant
-    except ImportError:
-        sys.exit("anthropic not installed — run: pip install anthropic")
-
-    api_key = require("ANTHROPIC_API_KEY")
-    client  = ant.Anthropic(api_key=api_key)
+    if _NOTES_BLOCKED:
+        print(f"    – skipped: {_NOTES_BLOCKED}")
+        return
+    if NOTES_MAX and _NOTES_MADE >= NOTES_MAX:
+        print(f"    – skipped: already made {NOTES_MAX} this run (--notes-max); next run")
+        return
 
     # Drop byte-identical copies of the same reading. Canvas sometimes attaches a
     # file both to the assignment and to the class folder, and paying to send the
@@ -787,8 +874,176 @@ def generate_notes(session: dict):
         unique_files.append(f)
     reading_files = unique_files
 
-    content: list[dict] = []
     skipped: list[str] = []
+    backend = notes_backend.backend(cfg)
+    try:
+        if backend == "claude-code":
+            result = _generate_via_claude_code(session, session_dir, master, canvas_block,
+                                               reading_files, skipped)
+        else:
+            result = _generate_via_api(prompt_text, reading_files, skipped)
+    except notes_backend.NotesRateLimited as e:
+        _block_notes(f"Claude usage limit reached ({str(e)[:80]}) — notes wait for the next run")
+        return
+    except notes_backend.NotesAuthError as e:
+        _block_notes("Claude Code is not signed in — on the Mac run `claude setup-token` and "
+                     f"re-upload CLAUDE_CODE_OAUTH_TOKEN ({str(e)[:80]})")
+        return
+    except notes_backend.NotesUnavailable as e:
+        print(f"    ✗ Notes not generated: {e}")
+        return
+    if result is None:
+        return
+    _finish_notes(session, session_dir, output_file, md_file, reading_files, skipped, result)
+
+
+# ── Notes: run-level state ────────────────────────────────────────────────────
+
+# Once the subscription is rate-limited or signed out, every later session in
+# this run is skipped with the same one-line reason instead of failing the
+# same way five more times.
+_NOTES_BLOCKED: "str | None" = None
+_NOTES_MADE = 0
+NOTES_MAX = 0          # set from --notes-max / NOTES_MAX_PER_RUN in main()
+
+
+def _block_notes(reason: str) -> None:
+    global _NOTES_BLOCKED
+    _NOTES_BLOCKED = reason
+    print(f"    ✗ {reason}")
+    gh_out = os.getenv("GITHUB_OUTPUT")
+    if gh_out:
+        with open(gh_out, "a") as fh:
+            fh.write("notes_skipped=true\n")
+
+
+def _finish_notes(session: dict, session_dir: Path, output_file: Path, md_file: Path,
+                  reading_files: list, skipped: list, result: str) -> None:
+    """Write the .md, the .docx and the generation record."""
+    global _NOTES_MADE
+    abbrev, date_str = session["abbrev"], session["date_str"]
+    assignments = _session_assignments(session)
+
+    skipped_names = {entry.split(" (")[0] for entry in skipped}
+    included = [f.name for f in reading_files if f.name not in skipped_names]
+
+    metadata: dict[str, str] = {
+        "Generated": datetime.now(tz=BOSTON).strftime("%Y-%m-%d %H:%M"),
+        "Course":    COURSE_NAMES.get(abbrev, abbrev),
+    }
+    if assignments:
+        metadata["Canvas"] = "; ".join(a.get("name", "") for a in assignments)
+    if included:
+        metadata["Readings"] = ", ".join(included)
+    if skipped:
+        metadata["Skipped"] = ", ".join(skipped)
+
+    title = notes_heading(date_str, abbrev)
+    write_markdown(md_file, title, metadata, result)
+    markdown_to_docx(md_text=result, output_path=output_file, title=title, metadata=metadata)
+
+    # Record what these Notes were generated from, so the next run can tell
+    # whether anything has changed without trusting file timestamps.
+    _write_notes_meta(session_dir, {
+        "assignments":       session_hashes(session),
+        "prompt_hash":       prompt_hash(abbrev),
+        "readings":          readings_fingerprint(session_dir),
+        "notes_file":        output_file.name,
+        "generated":         metadata["Generated"],
+        "canvas":            [a.get("name", "") for a in assignments],
+        "readings_included": included,
+        "skipped":           skipped,
+        "backend":           notes_backend.backend(cfg),
+    })
+    _NOTES_MADE += 1
+    print(f"    ✅ Generated: {output_file.name}")
+
+
+def _generate_via_claude_code(session: dict, session_dir: Path, master: str,
+                              canvas_block: str, reading_files: list,
+                              skipped: list) -> "str | None":
+    """
+    Notes through `claude -p` on the subscription. PDFs are read by the model
+    from the session folder; everything else is extracted here and piped in.
+    """
+    on_disk: list[str] = []
+    inline: list[str] = []
+    for f in reading_files:
+        ext = f.suffix.lower()
+        if ext == ".pdf":
+            pages = pdf_page_count(f)
+            if pages > PDF_PAGE_LIMIT:
+                reason = f"too long ({pages} pages, limit {PDF_PAGE_LIMIT})"
+                print(f"    WARN Skipped ({pages}p > {PDF_PAGE_LIMIT}-page limit): {f.name}")
+                skipped.append(f"{f.name} ({pages}p, too long)")
+                _write_skip_stub(f, reason)
+                continue
+            raw = f.read_bytes()[:4]
+            if not raw.startswith(b"%PDF"):
+                print(f"    WARN Skipped (not a valid PDF, got {raw!r}): {f.name}")
+                skipped.append(f.name)
+                continue
+            on_disk.append(f"- {f.name} ({pages} pages)")
+            print(f"    + {f.name} ({pages}p, read by the model)")
+        else:
+            text = ai_config.extract_text(f)
+            if not text.strip():
+                print(f"    WARN No readable text: {f.name}")
+                skipped.append(f.name)
+                continue
+            if len(text) > 400_000:
+                text = text[:400_000] + "\n[... truncated - file too large ...]"
+            kind = "SPREADSHEET" if ext in (".xlsx", ".csv") else "NOTE"
+            inline.append(f"=== {kind}: {f.name} ===\n{text}")
+            print(f"    + {f.name} ({len(text):,} chars of text)")
+
+    context = canvas_block.strip() + "\n\n"
+    if on_disk:
+        context += ("=== READINGS ON DISK (read each in full with the Read tool) ===\n"
+                    + "\n".join(on_disk) + "\n\n")
+    if inline:
+        context += "\n\n".join(inline) + "\n\n"
+    context += course_context(session, session_dir)
+
+    instruction = ("Produce the cheat sheet for this class session exactly as the system "
+                   "instructions describe. The Canvas posting, extracted notes and course "
+                   "context are on stdin; the PDFs listed there are in the current folder — "
+                   "read every one in full before writing. Output only the final Markdown.")
+    model_name = notes_backend.model(cfg)
+    print(f"    Calling Claude Code ({model_name})...", flush=True)
+    result, usage = notes_backend.generate_with_claude_code(
+        session_dir, master, instruction, context, model_name, cfg)
+    used = notes_backend.describe_usage(usage)
+    print(f"    Done{' (' + used + ')' if used else ''}")
+    return result
+
+
+def course_context(session: dict, session_dir: Path) -> str:
+    """
+    Course-level context for the notes: brief, previous class, next-class
+    peek, materials index. Filled in by course_brief.py; empty until then.
+    """
+    try:
+        import course_brief
+        return course_brief.context_for(session, session_dir)
+    except ImportError:
+        return ""
+    except Exception as e:
+        print(f"    (course context unavailable: {e})")
+        return ""
+
+
+def _generate_via_api(prompt_text: str, reading_files: list, skipped: list) -> str:
+    """Notes through the Messages API — the original, per-token path."""
+    try:
+        import anthropic as ant
+    except ImportError:
+        sys.exit("anthropic not installed — run: pip install anthropic")
+
+    api_key = require("ANTHROPIC_API_KEY")
+    client  = ant.Anthropic(api_key=api_key)
+
+    content: list[dict] = []
     pdf_token_used = 0
     if reading_files:
         content.append({"type": "text", "text": "Here are the assigned readings:"})
@@ -867,43 +1122,7 @@ def generate_notes(session: dict):
         print(f"    ⚠ Output truncated (hit max_tokens limit) — consider splitting readings")
     cost = ai_config.estimate_cost(msg.usage, MODEL)
     print(f"    Tokens: {msg.usage.input_tokens:,} in / {msg.usage.output_tokens:,} out  (~${cost:.3f})")
-    result = ai_config.response_text(msg)
-
-    skipped_names = {entry.split(" (")[0] for entry in skipped}
-    included = [f.name for f in reading_files if f.name not in skipped_names]
-
-    metadata: dict[str, str] = {
-        "Generated": datetime.now(tz=BOSTON).strftime("%Y-%m-%d %H:%M"),
-    }
-    if assignments:
-        metadata["Canvas"] = "; ".join(a.get("name", "") for a in assignments)
-    if included:
-        metadata["Readings"] = ", ".join(included)
-    if skipped:
-        metadata["Skipped"] = ", ".join(skipped)
-
-    title = notes_heading(date_str, abbrev)
-    write_markdown(md_file, title, metadata, result)
-    markdown_to_docx(
-        md_text     = result,
-        output_path = output_file,
-        title       = title,
-        metadata    = metadata,
-    )
-
-    # Record what these Notes were generated from, so the next run can tell
-    # whether anything has changed without trusting file timestamps.
-    _write_notes_meta(session_dir, {
-        "assignments":       session_hashes(session),
-        "prompt_hash":       prompt_hash(abbrev),
-        "readings":          readings_fingerprint(session_dir),
-        "notes_file":        output_file.name,
-        "generated":         metadata["Generated"],
-        "canvas":            [a.get("name", "") for a in assignments],
-        "readings_included": included,
-        "skipped":           skipped,
-    })
-    print(f"    ✅ Generated: {output_file.name}")
+    return ai_config.response_text(msg)
 
 # ── Calendar ──────────────────────────────────────────────────────────────────
 
@@ -1328,7 +1547,18 @@ def main():
                         default=int(cfg("PODCAST_MAX_PER_RUN") or 0),
                         help="At most N podcasts per run, 0 = no cap (default: "
                              "PODCAST_MAX_PER_RUN env, else 0)")
+    parser.add_argument("--notes-max", type=int, metavar="N",
+                        default=int(cfg("NOTES_MAX_PER_RUN") or 0),
+                        help="At most N notes documents per run, 0 = no cap (default: "
+                             "NOTES_MAX_PER_RUN env, else 0). A weekly backlog of Opus "
+                             "cheat sheets can exhaust a subscription's 5-hour window.")
     args = parser.parse_args()
+
+    global NOTES_MAX
+    NOTES_MAX = args.notes_max
+    if notes_backend.backend(cfg) == "claude-code":
+        ver = notes_backend.claude_version()
+        print(f"  Notes via Claude Code {ver or '(not installed!)'}, model {notes_backend.model(cfg)}")
 
     # A run with no courses would otherwise print "No upcoming sessions" and
     # exit 0 — which in CI looks exactly like a quiet day rather than a

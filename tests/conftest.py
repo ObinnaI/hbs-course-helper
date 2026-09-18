@@ -71,5 +71,7 @@ def patch_courses(monkeypatch, fake_paths):
     ids = {a: d["canvas_id"] for a, d in fake_paths["courses"].items()}
     monkeypatch.setattr(cr, "COURSES", ids)
     monkeypatch.setattr(cr, "ACTIVE_COURSES", dict(ids))
+    monkeypatch.setattr(cr, "COURSE_NAMES",
+                        {a: d["full_name"] for a, d in fake_paths["courses"].items()})
     monkeypatch.setattr(cr, "DEST_ROOT", fake_paths["coursework_root"])
     return fake_paths

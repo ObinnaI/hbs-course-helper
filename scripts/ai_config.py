@@ -97,6 +97,25 @@ def extract_text(path) -> str:
                     parts.append(f"--- Slide {i} ---\n" + "\n".join(lines))
             return "\n\n".join(parts)
 
+        if suffix == ".xlsx":
+            # Exhibit data, tab-separated per sheet, capped so a courseware
+            # model with 50k formula cells doesn't swamp the prompt.
+            import openpyxl
+            wb = openpyxl.load_workbook(str(path), data_only=True, read_only=True)
+            parts = []
+            for ws in wb.worksheets:
+                rows = []
+                for r, row in enumerate(ws.iter_rows(values_only=True)):
+                    if r >= 200:
+                        rows.append("[... more rows omitted ...]")
+                        break
+                    cells = ["" if v is None else str(v) for v in row[:30]]
+                    if any(c.strip() for c in cells):
+                        rows.append("\t".join(cells).rstrip())
+                if rows:
+                    parts.append(f"--- Sheet: {ws.title} ---\n" + "\n".join(rows))
+            return "\n\n".join(parts)
+
         return path.read_text(errors="replace")
     except Exception as e:
         return f"[Could not read {path.name}: {e}]"
