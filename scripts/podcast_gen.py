@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 HBS Podcast Generator
-Creates a ~20-minute NotebookLM audio overview for a class session.
+Creates a long NotebookLM "Deep Dive" audio overview for a class session.
 
 Output: YYMMDD CLASSCODE Podcast.m4a  (saved in the session folder)
 
@@ -10,11 +10,16 @@ Usage:
   ./.venv/bin/python scripts/podcast_gen.py 260908 CATS
 
 How it works:
-  1. Finds the session folder and reading PDFs
+  1. Finds the session folder, the readings, and the cheat sheet if one exists
   2. Creates (or reuses) a NotebookLM notebook for the session
-  3. Uploads readings + Canvas discussion questions as sources
-  4. Generates a ~20-min audio overview and waits for it to finish
+  3. Uploads the readings, the cheat sheet (as a clearly labelled text source —
+     the hosts are told it is the student's analysis, not the case) and the
+     Canvas posting with the discussion questions
+  4. Generates a Deep Dive at the longest length NotebookLM offers and waits
   5. Downloads the podcast to the session folder as an .m4a file
+
+  PODCAST_FORMAT / PODCAST_LENGTH (env or .env) override the format
+  (deep_dive | brief | critique | debate) and length (short | default | long).
 
 Prerequisites:
   - notebooklm-py installed: pip install 'notebooklm-py[browser]'
@@ -31,6 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import path_config
+import ai_config
 import canvas_common as _cc
 import canvas_refresh as _cr
 from notebooklm.exceptions import ArtifactInProgressTimeoutError
@@ -42,9 +48,45 @@ COURSE_IDS = {a: d["canvas_id"] for a, d in _COURSES.items()}
 
 _PROMPTS_DIR = _paths["prompts_dir"]
 
+CHEAT_SHEET_TITLE = "CHEAT SHEET — the student's own prep notes, NOT the case"
+POSTING_TITLE     = "CANVAS POSTING — the professor's discussion questions"
+
+
+def _audio_options():
+    """
+    (AudioFormat, AudioLength) from PODCAST_FORMAT / PODCAST_LENGTH.
+    Default is the longest Deep Dive NotebookLM will make.
+    """
+    from notebooklm.types import AudioFormat, AudioLength
+    fmt = (_cr.cfg("PODCAST_FORMAT") or "deep_dive").strip().upper()
+    ln  = (_cr.cfg("PODCAST_LENGTH") or "long").strip().upper()
+    return (getattr(AudioFormat, fmt, AudioFormat.DEEP_DIVE),
+            getattr(AudioLength, ln, AudioLength.LONG))
+
+
+def cheat_sheet_text(session_dir: Path, date_str: str, abbrev: str,
+                     title: str = "") -> "str | None":
+    """
+    The cheat sheet as plain text for a NotebookLM text source — the
+    Markdown twin when there is one, else the Word file's text.
+    """
+    np = _cc.notes_paths(session_dir, date_str, abbrev, title)
+    if np.md.exists():
+        return np.md.read_text(errors="replace")
+    existing = np.existing
+    if existing is None:
+        return None
+    twin = existing.with_suffix(".md")
+    if twin.exists():
+        return twin.read_text(errors="replace")
+    text = ai_config.extract_text(existing)
+    return text if text.strip() else None
+
 
 def _build_instructions(reading_files: list, abbrev: str) -> str:
     """Load podcast prompt from file, append course-specific notes if present."""
+    # The "supplemental" prompt adds a frameworks section when there is more
+    # than the case itself to draw on.
     has_supplemental = len(reading_files) > 1
     prompt_file = (
         _PROMPTS_DIR / "podcast_prompt_supplemental.md"
@@ -123,11 +165,14 @@ async def _generate(date_str: str, abbrev: str):
         usable.append(f)
     reading_files = usable
 
+    sheet = cheat_sheet_text(session_dir, date_str, abbrev, _cc.session_title(assignments))
+
     print(f"\nPodcast: {abbrev} {date_str}")
     print(f"Session: {session_dir}")
     print(f"Readings ({len(reading_files)}):")
     for f in reading_files:
         print(f"  • {f.name}")
+    print(f"Cheat sheet: {'yes' if sheet else 'none yet'}")
 
     if not reading_files and not assignments:
         sys.exit("No readings and no Canvas assignment — nothing to generate from.")
@@ -157,11 +202,19 @@ async def _generate(date_str: str, abbrev: str):
                 title = a.get("name", f"{session_label} Assignment")
                 desc  = _cr.strip_html(a.get("description") or "")
                 print(f"  + Adding Canvas assignment: {title}")
-                await client.sources.add_text(nb.id, title, desc, wait=True)
+                await client.sources.add_text(nb.id, f"{POSTING_TITLE}: {title}", desc, wait=True)
+
+            # The cheat sheet goes in as its own, unmistakably labelled source
+            # so the hosts can separate "the case says" from "the prep notes
+            # argue" — the prompt tells them to keep those apart out loud.
+            if sheet:
+                print(f"  + Adding the cheat sheet as a labelled source")
+                await client.sources.add_text(nb.id, CHEAT_SHEET_TITLE, sheet, wait=True)
 
         # Generate
         instructions = _build_instructions(reading_files, abbrev)
         has_supplemental = len(reading_files) > 1
+        audio_format, audio_length = _audio_options()
         # A render that outran the poll ceiling keeps going on NotebookLM's side.
         # Collect a finished one rather than paying for the same audio twice —
         # without this, every retry queued a second render and waited again.
@@ -179,12 +232,15 @@ async def _generate(date_str: str, abbrev: str):
             print(f"\n  Audio from an earlier run has finished ({mins} min) — "
                   f"collecting it instead of generating again.")
         else:
-            print(f"\nGenerating audio overview (~5–15 min)"
+            print(f"\nGenerating {audio_format.name.lower().replace('_', ' ')} "
+                  f"({audio_length.name.lower()} length; a long one renders 10–30 min)"
                   f"{' [with supplemental frameworks]' if has_supplemental else ''}...",
                   flush=True)
             status = await client.artifacts.generate_audio(
                 nb.id,
                 instructions=instructions,
+                audio_format=audio_format,
+                audio_length=audio_length,
             )
             print(f"  Task: {status.task_id}")
 

@@ -100,13 +100,24 @@ def class_number(text: str) -> "int | None":
 
 _CLASS_PREFIX_RE = re.compile(r"^\s*(?:session|class)\s+\d+\s*[:\-–—]?\s*", re.IGNORECASE)
 
+# Some courses title every posting with its date — "Thu. Sept 17 - Treu Pharma
+# II". The folder already starts with the date, so repeating it there reads
+# badly and buries the case name.
+_DATE_PREFIX_RE = re.compile(
+    r"""^\s*
+        (?:(?:mon|tues?|wed(?:nes)?|thur?s?|fri|sat|sun)[a-z]*\.?\s*,?\s*)?   # Thu. / Thursday,
+        (?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s*    # Sept.
+        \d{1,2}(?:st|nd|rd|th)?                                                 # 17th
+        \s*[-–—:]\s*""",
+    re.IGNORECASE | re.VERBOSE)
+
 
 def extract_case_title(name: str) -> str:
     """
     Strip 'COURSE | Class N: ' boilerplate, return the case/topic title.
     e.g. "CFO | Class 3: The DCF Method" → "The DCF Method"
     """
-    name = name or ""
+    name = _DATE_PREFIX_RE.sub("", name or "", count=1).strip()
     m = re.search(r"(?:class|session)\s+\d+\s*[:\-–—|]\s*(.*)", name, re.IGNORECASE)
     if m and m.group(1).strip():
         return m.group(1).strip()

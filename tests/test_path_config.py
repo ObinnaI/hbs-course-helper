@@ -186,3 +186,18 @@ def test_no_create_folders_env_makes_resolve_read_only(monkeypatch, tmp_path):
     monkeypatch.setenv("CANVAS_NO_CREATE_FOLDERS", "0")
     pc.resolve()
     assert (root / "Fall" / "Seminar in Investing").is_dir()
+
+
+def test_configured_folder_name_survives_a_missing_folder(monkeypatch, tmp_path):
+    cfg = {"courses": {"IFC": {"canvas_id": 9, "full_name": "Immersive Field Course: China: Trade",
+                               "folder_name": "Fall/Immersive Field Course - China", "term": "Fall"}},
+           "courses_refreshed_at": "2999-01-01T00:00:00+00:00"}
+    root, conf = _fresh(monkeypatch, tmp_path, cfg)
+
+    pc.resolve(create_folders=False)           # folder doesn't exist yet
+    stored = json.loads(conf.read_text())["courses"]["IFC"]["folder_name"]
+    assert stored == "Fall/Immersive Field Course - China"
+
+    paths = pc.resolve()                       # now create it — under the chosen name
+    assert (root / "Fall" / "Immersive Field Course - China").is_dir()
+    assert paths["courses"]["IFC"]["folder_name"] == "Fall/Immersive Field Course - China"

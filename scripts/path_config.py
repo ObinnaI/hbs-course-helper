@@ -115,6 +115,16 @@ CANVAS_BASE:  str = ""              # e.g. "https://hbs.instructure.com/api/v1"
 # ── Course cache TTL ──────────────────────────────────────────────────────────
 _COURSE_TTL_HOURS = 24
 
+# Six scripts call resolve() at import, so a notice printed per call appears
+# four or five times in a row. Say each one once per process.
+_ANNOUNCED: set = set()
+
+
+def _notice(message: str) -> None:
+    if message not in _ANNOUNCED:
+        _ANNOUNCED.add(message)
+        print(message)
+
 # ── Config file I/O ───────────────────────────────────────────────────────────
 
 def _load_config() -> dict:
@@ -657,8 +667,14 @@ def resolve(create_folders: "bool | None" = None) -> dict:
 
         cached_name = entry.get("folder_name")
         folder_name = _find_course_folder(abbrev, cached_name, full_name, term)
-        if folder_name != cached_name:
-            print(f"  [paths] {abbrev}: folder {cached_name!r} → {folder_name!r}")
+        if folder_name is None and cached_name:
+            # The name was chosen deliberately; the folder just doesn't exist
+            # yet (a new course, or a --discover run that creates nothing).
+            # Clearing it here used to throw the choice away and fall back to
+            # the name derived from Canvas on the next run.
+            pass
+        elif folder_name != cached_name:
+            _notice(f"  [paths] {abbrev}: folder {cached_name!r} → {folder_name!r}")
             cfg["courses"][abbrev]["folder_name"] = folder_name
             changed = True
 
@@ -672,14 +688,14 @@ def resolve(create_folders: "bool | None" = None) -> dict:
             want = cached_name or default_folder_name(abbrev, full_name, term)
             new_dir = COURSEWORK_ROOT / want
             if not create_folders:
-                print(f"  [paths] {abbrev}: would create course folder {new_dir}")
+                _notice(f"  [paths] {abbrev}: would create course folder {new_dir}")
             else:
                 try:
                     new_dir.mkdir(parents=True, exist_ok=True)
                     folder_name = want
                     cfg["courses"][abbrev]["folder_name"] = folder_name
                     changed = True
-                    print(f"  [paths] {abbrev}: created course folder {new_dir}")
+                    _notice(f"  [paths] {abbrev}: created course folder {new_dir}")
                     print(f"  [paths]   (add {canvas_id} to \"ignored_courses\" in "
                           f"canvas_config.json to skip this course instead)")
                 except OSError as e:

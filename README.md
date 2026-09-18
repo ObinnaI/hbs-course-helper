@@ -184,10 +184,10 @@ On refresh, existing ratings are preserved (matched by the course name in the co
 
 ## Podcast generation
 
-`podcast_gen.py` creates a conversational audio overview using NotebookLM:
-- **Case only**: 20-min deep-dive + 10-min discussion question walkthrough
-- **Case + supplemental readings**: adds a 5-min frameworks section
-- Saved as `YYMMDD COURSE Podcast.m4a` in the session folder
+`podcast_gen.py` creates a NotebookLM **Deep Dive** at the longest length NotebookLM offers (typically 45+ minutes), built for listening rather than note-taking:
+- Sources: the case and readings, the **cheat sheet** (uploaded as a clearly labelled text source — the hosts are told it is the student's analysis, not the case, and say so whenever they use it), and the Canvas posting with the discussion questions
+- Shape: a terse executive summary, then a fuller one; a page-by-page walk through the case; the anchor numbers explained conceptually (no table-reading); each discussion question worked through with the things to consider; three things to remember walking in
+- Saved as `YYMMDD COURSE Podcast.m4a` in the class folder. `PODCAST_FORMAT` (`deep_dive` | `brief` | `critique` | `debate`) and `PODCAST_LENGTH` (`short` | `default` | `long`) override the defaults.
 
 Prompt templates in `prompts/` are fully editable:
 - `podcast_prompt.md` — base template (case only)

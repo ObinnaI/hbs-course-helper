@@ -122,3 +122,15 @@ def test_extract_case_title_variants():
     assert cc.extract_case_title("MP | Class 5 – Pave (A)") == "Pave (A)"
     assert cc.extract_case_title("CATS | Class 1 | Capitalism") == "Capitalism"
     assert cc.extract_case_title("Plain title") == "Plain title"
+
+
+def test_date_titled_postings_do_not_repeat_the_date():
+    assert cc.extract_case_title("Wed. Sept 16 - Treu Pharma I") == "Treu Pharma I"
+    assert cc.extract_case_title("Thur. Sept 17 - Treu Pharma II + QUIZ 1") == "Treu Pharma II + QUIZ 1"
+    assert cc.extract_case_title("Thu. Sept 3rd - Course Introduction") == "Course Introduction"
+    assert cc.extract_case_title("Oct 1 - Viking Investment Negotiation") == "Viking Investment Negotiation"
+    assert cc.session_dirname("260916", "NEG", [_a("Wed. Sept 16 - Treu Pharma I")]) \
+        == "260916 Treu Pharma I"
+    # A real title that merely starts with a month-like word is untouched.
+    assert cc.extract_case_title("March of the Penguins") == "March of the Penguins"
+    assert cc.extract_case_title("MP | Class 5: Pave (A)") == "Pave (A)"
