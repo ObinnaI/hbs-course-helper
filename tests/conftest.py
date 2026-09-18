@@ -73,5 +73,9 @@ def patch_courses(monkeypatch, fake_paths):
     monkeypatch.setattr(cr, "ACTIVE_COURSES", dict(ids))
     monkeypatch.setattr(cr, "COURSE_NAMES",
                         {a: d["full_name"] for a, d in fake_paths["courses"].items()})
+    # Staleness freezes notes once a class is past; keep "today" before every
+    # fixture date so those tests exercise the live path.
+    from datetime import date as _date
+    monkeypatch.setattr(cr, "_today", lambda: _date(2026, 9, 1))
     monkeypatch.setattr(cr, "DEST_ROOT", fake_paths["coursework_root"])
     return fake_paths

@@ -229,6 +229,35 @@ def podcast_path(session_dir: Path, date_str: str, abbrev: str) -> Path:
     return session_dir / f"{artifact_stem(date_str, abbrev)} Podcast.m4a"
 
 
+# ── Course-level materials folder ─────────────────────────────────────────────
+
+MATERIALS_DEFAULT = "Course Materials"
+_MATERIALS_RE = re.compile(r"^course\s+(docs|materials|textbook|readings|notes)", re.IGNORECASE)
+
+
+def materials_dir_name(course_folder: Path) -> str:
+    """
+    The course-level folder (syllabus, textbook, wrap-ups, the course brief).
+    A folder the user already keeps — "Course Textbook and Materials",
+    "Course Docs" — is adopted rather than duplicated; the tool's own older
+    "General" is honoured; otherwise "Course Materials" is created.
+    """
+    if course_folder.exists():
+        names = [d.name for d in course_folder.iterdir() if d.is_dir()]
+        if MATERIALS_DEFAULT in names:
+            return MATERIALS_DEFAULT
+        for n in sorted(names):
+            if _MATERIALS_RE.match(n):
+                return n
+        if "General" in names:
+            return "General"
+    return MATERIALS_DEFAULT
+
+
+def materials_dir(course_folder: Path) -> Path:
+    return course_folder / materials_dir_name(course_folder)
+
+
 # ── Notes files ───────────────────────────────────────────────────────────────
 
 @dataclass

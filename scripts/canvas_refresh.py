@@ -347,7 +347,7 @@ def sync_course_files(course_id: int, abbrev: str, target_date_str: str | None =
     Otherwise sync all course files to General/.
     """
     course_folder = (_COURSES.get(abbrev, {}).get("folder_path") or DEST_ROOT / abbrev)
-    general_dir = course_folder / "General"
+    general_dir = canvas_common.materials_dir(course_folder)
     general_dir.mkdir(parents=True, exist_ok=True)
 
     folders = canvas_get(f"courses/{course_id}/folders", {"per_page": 100})
@@ -435,6 +435,183 @@ def sync_course_files(course_id: int, abbrev: str, target_date_str: str | None =
                     dest = session_dir / fname
                 if canvas_download(f["url"], dest):
                     print(f"    ↓ [linked] {f['display_name']}")
+
+# ── Post-class materials: look back, not just forward ────────────────────────
+#
+# The sync used to "never look back", so a wrap-up the professor posted the
+# day after class was never fetched. These pull the last LOOKBACK_DAYS of
+# per-class Canvas folders, module items and announcements into the class
+# folders they belong to (by class number), or into the course materials
+# folder when they belong to the course as a whole. Every Canvas item id is
+# remembered in claude/synced_items.json so nothing is fetched twice.
+
+LOOKBACK_DAYS = 21
+
+
+def _synced_items_path() -> Path:
+    return path_config.CONFIG_FILE.parent / "synced_items.json"
+
+
+def _load_synced() -> dict:
+    try:
+        p = _synced_items_path()
+        return json.loads(p.read_text()) if p.exists() else {}
+    except Exception:
+        return {}
+
+
+def _save_synced(state: dict) -> None:
+    try:
+        p = _synced_items_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(state, indent=2, sort_keys=True))
+    except OSError as e:
+        print(f"    ⚠ could not write {p.name}: {e}")
+
+
+def class_dates(course_id: int) -> dict:
+    """{class number: (date_str, [postings])} for every class posting of a course."""
+    out: dict = {}
+    for a in canvas_get(f"courses/{course_id}/assignments", {"per_page": 100}):
+        if not a.get("due_at"):
+            continue
+        if canvas_common.classify_submission(a.get("submission_types")) not in SESSION_KINDS:
+            continue
+        cn = class_number(a.get("name", ""))
+        if cn is None:
+            continue
+        ds = yymmdd(boston_date(a["due_at"]))
+        out.setdefault(cn, (ds, []))[1].append(a)
+    return out
+
+
+def _dest_for_class(course_folder: Path, abbrev: str, cn: "int | None",
+                    dates: dict) -> Path:
+    """The class folder for class number cn, else the course materials folder."""
+    if cn is not None and cn in dates:
+        ds, postings = dates[cn]
+        return canvas_common.session_dir_for(course_folder, ds, abbrev, postings)
+    return canvas_common.materials_dir(course_folder)
+
+
+def _save_text(dest_dir: Path, name: str, text: str) -> bool:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    out = dest_dir / f"{safe_name(name)[:120]}.md"
+    if out.exists():
+        return False
+    out.write_text(text)
+    return True
+
+
+def sync_modules(course_id: int, abbrev: str, course_folder: Path,
+                 synced: dict) -> int:
+    """Files and pages in Canvas Modules → class folder (by class number) or materials."""
+    dates = class_dates(course_id)
+    seen = synced.setdefault(str(course_id), {})
+    n = 0
+    modules = canvas_get(f"courses/{course_id}/modules", {"include[]": "items", "per_page": 100})
+    for m in modules:
+        m_cn = class_number(m.get("name", ""))
+        items = m.get("items")
+        if items is None:   # some instances don't inline items even with include[]
+            items = canvas_get(f"courses/{course_id}/modules/{m['id']}/items", {"per_page": 100})
+        for item in items or []:
+            key = f"module:{item.get('id')}"
+            if key in seen:
+                continue
+            cn = class_number(item.get("title", "")) or m_cn
+            dest_dir = _dest_for_class(course_folder, abbrev, cn, dates)
+            kind = item.get("type")
+            try:
+                if kind == "File" and item.get("content_id"):
+                    f = canvas_get(f"files/{item['content_id']}")
+                    if isinstance(f, dict) and f.get("url"):
+                        fname = safe_name(f.get("display_name") or f.get("filename") or item["title"])
+                        if Path(fname).suffix.lower() in SLIDE_EXTS and cn is None:
+                            dest = canvas_common.materials_dir(course_folder) / "Slides" / fname
+                        else:
+                            dest = dest_dir / fname
+                        if canvas_download(f["url"], dest):
+                            print(f"    ↓ [module] {dest.relative_to(course_folder)}")
+                            n += 1
+                elif kind == "Page" and item.get("page_url"):
+                    page = canvas_get(f"courses/{course_id}/pages/{item['page_url']}")
+                    if isinstance(page, dict) and page.get("body"):
+                        text = f"# {page.get('title', item['title'])}\n\n{strip_html(page['body'])}\n"
+                        if _save_text(dest_dir, page.get("title") or item["title"], text):
+                            print(f"    ↓ [module page] {item['title']}")
+                            n += 1
+                else:
+                    continue   # headers, external links, assignments: nothing to store
+            except Exception as e:
+                print(f"    ✗ module item {item.get('title')}: {e}")
+                continue
+            seen[key] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return n
+
+
+def sync_announcements(course_id: int, abbrev: str, course_folder: Path,
+                       synced: dict, days: int = LOOKBACK_DAYS) -> int:
+    """Recent announcements → 'YYMMDD Announcement - title.md' (+ attachments)."""
+    dates = class_dates(course_id)
+    seen = synced.setdefault(str(course_id), {})
+    cutoff = datetime.now(tz=BOSTON) - timedelta(days=days)
+    n = 0
+    posts = canvas_get(f"courses/{course_id}/discussion_topics",
+                       {"only_announcements": "true", "per_page": 50})
+    for a in posts:
+        key = f"announcement:{a.get('id')}"
+        if key in seen or not a.get("posted_at"):
+            continue
+        posted = boston_date(a["posted_at"])
+        if posted < cutoff:
+            continue
+        title = a.get("title", "Announcement")
+        body  = strip_html(a.get("message") or "")
+        cn = class_number(title) or class_number(body[:400])
+        dest_dir = _dest_for_class(course_folder, abbrev, cn, dates)
+        if cn is None:
+            dest_dir = dest_dir / "Announcements"
+        text = (f"# {title}\n\nPosted {posted.strftime('%Y-%m-%d %H:%M')} — Canvas announcement\n\n"
+                f"{body}\n")
+        if _save_text(dest_dir, f"{yymmdd(posted)} Announcement - {title}", text):
+            print(f"    ↓ [announcement] {title}")
+            n += 1
+        for att in a.get("attachments") or []:
+            if att.get("url"):
+                dest = dest_dir / safe_name(att.get("display_name") or att.get("filename") or "attachment")
+                if canvas_download(att["url"], dest):
+                    print(f"    ↓ [announcement file] {dest.name}")
+                    n += 1
+        seen[key] = posted.isoformat()
+    return n
+
+
+def sync_post_class_materials(days: int = LOOKBACK_DAYS) -> None:
+    """Per active course: recent class folders, module items, announcements."""
+    now = datetime.now(tz=BOSTON)
+    since = now - timedelta(days=days)
+    synced = _load_synced()
+    total = 0
+    for abbrev, course_id in ACTIVE_COURSES.items():
+        course_folder = (_COURSES.get(abbrev, {}).get("folder_path") or DEST_ROOT / abbrev)
+        try:
+            # Class folders of sessions that already happened (new files only).
+            for a in canvas_get(f"courses/{course_id}/assignments", {"per_page": 100}):
+                if not a.get("due_at"):
+                    continue
+                dt = boston_date(a["due_at"])
+                if since <= dt < now and \
+                        canvas_common.classify_submission(a.get("submission_types")) in SESSION_KINDS:
+                    sync_course_files(course_id, abbrev, target_date_str=yymmdd(dt))
+            total += sync_modules(course_id, abbrev, course_folder, synced)
+            total += sync_announcements(course_id, abbrev, course_folder, synced, days)
+        except Exception as e:
+            print(f"    ✗ {abbrev}: post-class sync failed: {e}")
+    _save_synced(synced)
+    print(f"  Post-class materials: {total} new item(s)." if total else
+          "  Post-class materials: nothing new.")
+
 
 # ── Markdown → docx conversion ───────────────────────────────────────────────
 #
@@ -723,6 +900,19 @@ def readings_fingerprint(session_dir: Path) -> dict[str, str]:
     return {f.name: canvas_common.file_md5(f) for f in _reading_files(session_dir)}
 
 
+def _today():
+    return datetime.now(tz=BOSTON).date()
+
+
+def _session_is_past(date_str: str) -> bool:
+    try:
+        from datetime import date as _date
+        d = _date(int("20" + date_str[:2]), int(date_str[2:4]), int(date_str[4:6]))
+    except (ValueError, TypeError):
+        return False
+    return d < _today()
+
+
 def _read_notes_meta(session_dir: Path) -> dict:
     meta_file = session_dir / ".notes_meta.json"
     try:
@@ -777,6 +967,12 @@ def notes_are_stale(session_dir: Path, abbrev: str, date_str: str,
     notes_file = canvas_common.notes_paths(session_dir, date_str, abbrev, title).existing
     if notes_file is None:
         return True, "no Notes file yet"
+
+    # Once the class has happened the notes are a record. Files that arrive
+    # afterwards — wrap-up slides, the professor's summary — feed the course
+    # brief and the next class, not a rewrite of this one.
+    if _session_is_past(date_str):
+        return False, "class is past; notes frozen"
 
     meta = _read_notes_meta(session_dir)
     canvas_hashes = canvas_hashes or {}
@@ -1021,16 +1217,24 @@ def _generate_via_claude_code(session: dict, session_dir: Path, master: str,
 def course_context(session: dict, session_dir: Path) -> str:
     """
     Course-level context for the notes: brief, previous class, next-class
-    peek, materials index. Filled in by course_brief.py; empty until then.
+    peek, materials index. Assembled by course_brief.py.
     """
     try:
         import course_brief
         return course_brief.context_for(session, session_dir)
-    except ImportError:
-        return ""
     except Exception as e:
         print(f"    (course context unavailable: {e})")
         return ""
+
+
+def _update_course_briefs() -> None:
+    """Refresh each active course's brief with the classes that have happened."""
+    print("\n  Updating course briefs...")
+    try:
+        import course_brief
+        course_brief.update_all(_COURSES, active_only=True)
+    except Exception as e:
+        print(f"  ⚠ course briefs not updated: {e}")
 
 
 def _generate_via_api(prompt_text: str, reading_files: list, skipped: list) -> str:
@@ -1375,6 +1579,9 @@ def run_daily(skip_prompt_regen: bool = False, with_podcast: bool = False,
         else:
             print(f"    ✓ Notes up to date")
 
+    print("\n  Looking back for wrap-ups, module items and announcements...")
+    sync_post_class_materials()
+
     print("\n  Organizing folders...")
     canvas_organize.organize_all(verbose=True)
 
@@ -1382,6 +1589,8 @@ def run_daily(skip_prompt_regen: bool = False, with_podcast: bool = False,
     trashed = canvas_organize.dedup_to_trash(verbose=True)
     if trashed:
         print(f"  {trashed} duplicate(s) moved to Trash.")
+
+    _update_course_briefs()
 
     print("\n  Syncing calendar...")
     _sync_calendar()
@@ -1454,6 +1663,9 @@ def run_weekly(skip_prompt_regen: bool = False, with_podcast: bool = False,
         else:
             print(f"    ✓ Notes up to date")
 
+    print("\n  Looking back for wrap-ups, module items and announcements...")
+    sync_post_class_materials()
+
     print("\n  Organizing folders...")
     canvas_organize.organize_all(verbose=True)
 
@@ -1463,6 +1675,8 @@ def run_weekly(skip_prompt_regen: bool = False, with_podcast: bool = False,
         print(f"  {trashed} duplicate(s) moved to Trash.")
     else:
         print("  No duplicates found.")
+
+    _update_course_briefs()
 
     print("\n  Generating weekly overview...")
     ov = weekly_overview.generate()

@@ -4,17 +4,15 @@ canvas_organize.py — Deduplication and folder organization
 
 Rules (applied in order, each file ends up in exactly one place):
 
-  PPTX/PPT (slides) — always go to General/Slides/, regardless of where
+  PPTX/PPT (slides) — always go to <materials>/Slides/, regardless of where
   Canvas placed them (even if in a per-class session folder).
 
-  PDFs / docs in session folders (YYMMDD ABBREV/) — stay there; any
-  duplicate copy in General/ is removed.
+  PDFs / docs in session folders (YYMMDD Class N - Title/) — stay there; a
+  second copy of the same file in a later class folder is removed.
 
-  PDFs / docs in General/ root:
-    - Course-level doc (syllabus, schedule, guide, etc.) → stays in General/
-    - Otherwise → General/Supplemental/
-
-  Supplemental/ and Slides/ files — never touched (already canonical).
+  Everything else in the course materials folder ("Course Materials", or
+  a folder you already keep such as "Course Textbook and Materials") stays
+  put — it is the course's reference shelf, not something to reshuffle.
 
 Safe by design:
   - A file is only ever removed when another copy with identical content
@@ -110,14 +108,12 @@ def _migrate_session_slides(course_dir: Path, slides_dir: Path, counts: dict) ->
 
 def organize_course(course_dir: Path, abbrev: str) -> dict:
     """Organize a single course directory. Returns counts of actions taken."""
-    general = course_dir / "General"
+    general = canvas_common.materials_dir(course_dir)
     if not general.exists():
         return {}
 
     slides_dir       = general / "Slides"
     supplemental_dir = general / "Supplemental"
-
-    supplemental_dir.mkdir(exist_ok=True)
 
     counts = {"removed": 0, "slides": 0, "supplemental": 0, "kept": 0, "warned": 0}
 
@@ -127,50 +123,36 @@ def organize_course(course_dir: Path, abbrev: str) -> dict:
     # Rebuild session index after moving slides (so the index reflects current state)
     session_index = _session_file_index(course_dir)
 
-    # ── Step 1-4: Process files in General/ root ──────────────────────────────
+    # ── Files at the root of the materials folder ─────────────────────────────
     for f in sorted(general.iterdir()):
         if f.is_dir() or f.name.startswith('.'):
             continue
 
-        # 1. Duplicate of a session file → remove from General/
+        # 1. A copy of a class reading kept on the shelf is deliberate — the
+        #    textbook chapter or note is wanted across classes — so it stays,
+        #    unlike the old General/ rule that removed it. Slides still move.
         if f.name in session_index:
-            session_copies = session_index[f.name]
-            identical = next((s for s in session_copies if same_content(f, s)), None)
-            if identical is not None:
-                f.unlink()
-                counts["removed"] += 1
-                print(f"    ✗ duplicate removed: {f.name}  (in: {identical.parent.name})")
-            else:
-                counts["warned"] += 1
-                locations = ", ".join(p.parent.name for p in session_copies)
-                print(f"    ⚠ same name, different content, leaving both: {f.name}  (in: {locations})")
+            counts["kept"] += 1
             continue
 
-        # 2. Slides → General/Slides/
+        # 2. Slides → <materials>/Slides/
         if f.suffix.lower() in SLIDE_EXTS:
             slides_dir.mkdir(exist_ok=True)
             dest = slides_dir / f.name
             if dest.exists():
-                _remove_if_identical(f, dest, counts, "slides", "General/")
+                _remove_if_identical(f, dest, counts, "slides", f"{general.name}/")
             else:
                 f.rename(dest)
                 counts["slides"] += 1
                 print(f"    → Slides/: {f.name}")
             continue
 
-        # 3. Course-level doc → keep in General/ root
-        if _is_course_level(f.name):
-            counts["kept"] += 1
-            continue
-
-        # 4. Everything else → General/Supplemental/
-        dest = supplemental_dir / f.name
-        if dest.exists():
-            _remove_if_identical(f, dest, counts, "supplemental", "General/")
-        else:
-            f.rename(dest)
-            counts["supplemental"] += 1
-            print(f"    → Supplemental/: {f.name}")
+        # 3. Everything else stays where it is. The materials folder is the
+        #    course's reference shelf (syllabus, textbook, wrap-ups, the course
+        #    brief) — and often the user's own folder — so it is not reshuffled
+        #    into Supplemental/ the way the old General/ was. An existing
+        #    Supplemental/ is left alone too.
+        counts["kept"] += 1
 
     return counts
 
@@ -238,10 +220,10 @@ def _course_dirs(paths: dict) -> list[Path]:
 def _classify_priority(p: Path, course_dir: Path) -> int:
     """
     Return priority tier for a file (lower number = keep this copy).
-      0 — General/Slides/      (canonical home for PPTX)
+      0 — <materials>/Slides/  (canonical home for PPTX)
       1 — session folder       (canonical for PDFs tied to a day)
-      2 — General/Supplemental/
-      3 — General/ root
+      2 — <materials>/Supplemental/
+      3 — <materials>/ root
       5 — course root (file directly under COURSE/, not in a subfolder)
     """
     try:
@@ -253,7 +235,7 @@ def _classify_priority(p: Path, course_dir: Path) -> int:
     sub = parts[0]
     if SESSION_RE.match(sub):
         return 1
-    if sub == "General":
+    if sub == canvas_common.materials_dir_name(course_dir):
         if len(parts) >= 3:
             if parts[1] == "Slides":        return 0
             if parts[1] == "Supplemental":  return 2
@@ -281,13 +263,12 @@ def _choose_keep(file_paths: list[Path], course_dir: Path) -> Path:
 
 def dedup_to_trash(verbose: bool = True) -> int:
     """
-    Within each course folder, find files that share a name and move the
-    lower-priority copies to the Trash — but only when their content is
-    identical to the copy being kept. Returns count of files trashed.
+    Within each course folder, find files that share a name across class-day
+    folders (and Slides/) and move the lower-priority copies to the Trash —
+    only when their content is identical to the copy being kept. The
+    materials shelf is never touched. Returns count of files trashed.
 
-    Priority (highest = keep):
-      General/Slides/  >  session folder  >  Supplemental/  >  General/ root
-    For duplicate session-folder copies, keep the earliest date.
+    Priority (highest = keep):  Slides/  >  earliest session folder
     """
     paths = path_config.resolve()
     root = paths["coursework_root"]
@@ -301,6 +282,7 @@ def dedup_to_trash(verbose: bool = True) -> int:
     trashed = 0
 
     for course_dir in _course_dirs(paths):
+        materials_name = canvas_common.materials_dir_name(course_dir)
         by_name: dict[str, list[Path]] = defaultdict(list)
         for f in sorted(course_dir.rglob("*")):
             if not f.is_file():
@@ -312,7 +294,10 @@ def dedup_to_trash(verbose: bool = True) -> int:
             # legitimately hold copies of readings and must be left alone.
             if any(part.startswith(".") for part in rel):
                 continue
-            if len(rel) < 2 or not (SESSION_RE.match(rel[0]) or rel[0] == "General"):
+            # Only class-day folders and the Slides/ shelf take part; the rest
+            # of the materials folder (and every protected folder) is left alone.
+            in_slides = rel[0] == materials_name and len(rel) >= 3 and rel[1] == "Slides"
+            if len(rel) < 2 or not (SESSION_RE.match(rel[0]) or in_slides):
                 continue
             by_name[f.name].append(f)
 

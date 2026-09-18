@@ -124,6 +124,7 @@ def notes_env(patch_courses, fake_claude, monkeypatch):
     monkeypatch.setattr(cr, "_NOTES_MADE", 0)
     monkeypatch.setattr(cr, "NOTES_MAX", 0)
     monkeypatch.setattr(cr, "pdf_page_count", lambda p: 12)
+    monkeypatch.setattr(cr, "canvas_get", lambda *a, **k: [])
     course = patch_courses["courses"]["LTV"]["folder_path"]
     d = course / "260916 Class 5 - Pave (A)"; d.mkdir()
     (d / "260916 Pave.pdf").write_bytes(b"%PDF-1.4 fake")

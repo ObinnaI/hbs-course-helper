@@ -33,14 +33,15 @@ def test_same_name_different_content_both_survive(patch_courses, trash):
     assert not trash.exists() or not any(trash.iterdir())
 
 
-def test_identical_lower_priority_copy_trashed_once(patch_courses, trash):
+def test_identical_later_session_copy_trashed_once(patch_courses, trash):
     ltv = patch_courses["courses"]["LTV"]["folder_path"]
     session = _write(ltv / "260902 LTV" / "Case.pdf", b"%PDF-same")
-    general = _write(ltv / "General" / "Case.pdf", b"%PDF-same")
+    later   = _write(ltv / "260916 LTV" / "Case.pdf", b"%PDF-same")
+    shelf   = _write(ltv / "General" / "Case.pdf", b"%PDF-same")
 
     assert co.dedup_to_trash(verbose=False) == 1
-    assert session.exists()
-    assert not general.exists()
+    assert session.exists() and shelf.exists()      # the shelf copy is deliberate
+    assert not later.exists()
     assert (trash / "Case.pdf").read_bytes() == b"%PDF-same"
 
     # Idempotent: nothing left to do.
@@ -84,7 +85,7 @@ def test_dotfiles_and_trash_dir_are_ignored(patch_courses, trash, monkeypatch):
     root = patch_courses["coursework_root"]
     monkeypatch.setenv("COURSEWORK_TRASH", str(root / ".trash"))
     keep = _write(ltv / "260902 LTV" / "Case.pdf", b"same")
-    _write(ltv / "General" / "Case.pdf", b"same")
+    _write(ltv / "260916 LTV" / "Case.pdf", b"same")
     _write(ltv / "260902 LTV" / ".notes_meta.json", b"{}")
     _write(ltv / "260908 LTV" / ".notes_meta.json", b"{}")
 
@@ -140,11 +141,11 @@ def test_organize_course_keeps_mismatched_content(tmp_path):
 
     assert deck_general.exists() and deck_slides.exists()
     assert pdf_general.exists() and pdf_supp.exists()
-    assert counts["warned"] == 2
+    assert counts["warned"] == 1
     assert counts["slides"] == 0 and counts["supplemental"] == 0
 
 
-def test_organize_course_removes_identical_copies(tmp_path):
+def test_organize_course_moves_slides_keeps_shelf_copies(tmp_path):
     course = tmp_path / "LTV"
     session = _write(course / "260902 LTV" / "Case.pdf", b"same")
     general = _write(course / "General" / "Case.pdf", b"same")
@@ -153,12 +154,12 @@ def test_organize_course_removes_identical_copies(tmp_path):
 
     counts = co.organize_course(course, "LTV")
 
-    assert session.exists() and not general.exists()
+    assert session.exists() and general.exists()        # shelf copies stay
     assert deck_slides.exists() and not deck_session.exists()
-    assert counts["removed"] == 1 and counts["slides"] == 1
+    assert counts["removed"] == 0 and counts["slides"] == 1
 
 
-def test_organize_course_moves_when_no_conflict(tmp_path):
+def test_organize_course_moves_slides_and_leaves_the_shelf(tmp_path):
     course = tmp_path / "LTV"
     deck = _write(course / "General" / "deck.pptx", b"PK")
     supp = _write(course / "General" / "reading.pdf", b"%PDF")
@@ -167,6 +168,18 @@ def test_organize_course_moves_when_no_conflict(tmp_path):
     counts = co.organize_course(course, "LTV")
 
     assert (course / "General" / "Slides" / "deck.pptx").exists() and not deck.exists()
-    assert (course / "General" / "Supplemental" / "reading.pdf").exists() and not supp.exists()
-    assert syll.exists()
-    assert counts == {"removed": 0, "slides": 1, "supplemental": 1, "kept": 1, "warned": 0}
+    assert supp.exists() and syll.exists()          # the shelf is not reshuffled
+    assert counts == {"removed": 0, "slides": 1, "supplemental": 0, "kept": 2, "warned": 0}
+
+
+def test_organize_course_uses_the_users_materials_folder(tmp_path):
+    course = tmp_path / "MP"
+    deck = _write(course / "Course Textbook and Materials" / "deck.pptx", b"PK")
+    _write(course / "260909 Class 4 - Equity" / "Six Challenges.pdf", b"same")
+    dup = _write(course / "Course Textbook and Materials" / "Six Challenges.pdf", b"same")
+
+    counts = co.organize_course(course, "MP")
+
+    assert (course / "Course Textbook and Materials" / "Slides" / "deck.pptx").exists() and not deck.exists()
+    assert dup.exists() and counts["removed"] == 0
+    assert not (course / "General").exists()
