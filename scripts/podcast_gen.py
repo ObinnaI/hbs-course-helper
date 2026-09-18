@@ -268,8 +268,52 @@ async def _generate(date_str: str, abbrev: str):
         print(f"  ↓ Downloading...")
         await client.artifacts.download_audio(nb.id, str(podcast_file))
 
+    shrink_for_speech(podcast_file)
     print(f"\n✅ Saved: {podcast_file}")
     print(f"   Play:  open '{podcast_file}'")
+
+
+def shrink_for_speech(path: Path) -> None:
+    """
+    Re-encode to a speech bitrate when ffmpeg is available.
+
+    NotebookLM hands back ~260 kb/s stereo — 2 MB per minute — so a long Deep
+    Dive lands near GitHub's 100 MB per-file limit and a term of episodes
+    runs to gigabytes. 64 kb/s mono AAC is indistinguishable for two voices
+    and a quarter of the size. PODCAST_BITRATE overrides; "0" disables.
+    """
+    import shutil
+    import subprocess
+    bitrate = (_cr.cfg("PODCAST_BITRATE") or "64k").strip()
+    if bitrate == "0" or not path.exists():
+        return
+    bps = int(float(bitrate.lower().rstrip("k")) * 1000) if bitrate.lower().endswith("k") else int(bitrate)
+    ffmpeg = shutil.which("ffmpeg")
+    afconvert = shutil.which("afconvert")      # ships with macOS; no install needed
+    tmp = path.with_suffix(".tmp.m4a")
+    if ffmpeg:
+        cmd = [ffmpeg, "-y", "-loglevel", "error", "-i", str(path),
+               "-vn", "-ac", "1", "-c:a", "aac", "-b:a", bitrate,
+               "-movflags", "+faststart", str(tmp)]
+    elif afconvert:
+        # afconvert cannot downmix to mono without a channel map, and at this
+        # bitrate stereo is already a quarter of the size; keep the channels.
+        cmd = [afconvert, "-f", "m4af", "-d", "aac", "-b", str(bps),
+               str(path), str(tmp)]
+    else:
+        return
+    before = path.stat().st_size
+    try:
+        subprocess.run(cmd, check=True, timeout=900, capture_output=True)
+        after = tmp.stat().st_size
+        if 0 < after < before:
+            tmp.replace(path)
+            print(f"  ⇣ Re-encoded for speech: {before/1e6:.0f} MB → {after/1e6:.0f} MB ({bitrate} mono)")
+        else:
+            tmp.unlink(missing_ok=True)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+        print(f"  (kept original audio; ffmpeg failed: {e})")
+        tmp.unlink(missing_ok=True)
 
 
 def main():
