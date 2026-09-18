@@ -25,7 +25,10 @@
 #   PODCAST_MAX_PER_RUN  episodes per tick           default 2
 
 set -euo pipefail
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+# launchd gives a bare PATH; the podcast fallback needs the venv only, but a
+# local notes run needs the `claude` CLI (npm global or nvm).
+export PATH="$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+for nvm_bin in "$HOME"/.nvm/versions/node/*/bin; do [ -d "$nvm_bin" ] && PATH="$PATH:$nvm_bin"; done
 
 CODE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENVF="$CODE/.env"
