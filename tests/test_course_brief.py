@@ -112,7 +112,7 @@ def test_update_course_writes_blocks_once(course, monkeypatch):
     assert len(calls) == n
     # A new wrap-up file → that class block is refreshed.
     (course / "260909 Class 4 - Equity" / "Wrap-up slides.pdf").write_bytes(b"%PDF")
-    ask2, calls2 = _fake_ask(["### Class 4 - Equity\n**Key takeaways:**\n- updated\n"])
+    ask2, calls2 = _fake_ask(["### Class 4 - Equity\n**Lenses and frameworks introduced:** x\n**Key takeaways:**\n- updated\n"])
     monkeypatch.setattr(cb, "_ask", ask2)
     cb.update_course("LTV", info, today=date(2026, 9, 18))
     assert len(calls2) == 1 and "POST-CLASS FILES ON DISK" in calls2[0][3]
@@ -229,3 +229,41 @@ class _FrozenDatetime(cr.datetime):
     @classmethod
     def now(cls, tz=None):
         return cr.datetime(2026, 9, 18, 12, 0, tzinfo=tz or cr.timezone.utc)
+
+
+def test_docx_cheat_sheet_is_read_and_complaints_are_rejected(course, monkeypatch):
+    past = course / "260909 Class 4 - Equity"
+    (past / "Cheat Sheet - Equity.md").unlink()           # adopted folders have only the .docx
+    (past / "Cheat Sheet - Equity.docx").write_bytes(b"PK")
+    monkeypatch.setattr(cr.ai_config, "extract_text", lambda p: f"TEXT OF {p.name}")
+    ctx, on_disk, _ = cb._class_inputs(past, "260909")
+    assert "=== CHEAT SHEET (Cheat Sheet - Equity.docx)" in ctx and "TEXT OF Cheat Sheet - Equity.docx" in ctx
+    assert on_disk and on_disk[0].name == "260909 Equity.pdf"     # PDFs are listed for the Read tool
+
+    assert cb.looks_like_entry("### Class 4\n**Lenses and frameworks introduced:** x\n**Key takeaways:**\n- y")
+    assert not cb.looks_like_entry("I've hit a hard blocker: I can't extract text from the .docx files.")
+
+    ask, calls = _fake_ask(["I can't read these files. How would you like to proceed?"])
+    monkeypatch.setattr(cb, "_ask", ask)
+    text = cb.TEMPLATE.format(name="X", code="X")
+    state = {}
+    out = cb.update_class_block(course, past, "260909", text, state)
+    assert "class-260909" not in cb.blocks(out)
+    assert "classes" not in state                         # retried next run
+
+
+def test_empty_class_folder_is_skipped_without_a_call(course, monkeypatch):
+    empty = course / "260911 Class 3 - Safelite"; empty.mkdir()
+    ask, calls = _fake_ask([])
+    monkeypatch.setattr(cb, "_ask", ask)
+    text = cb.TEMPLATE.format(name="X", code="X")
+    out = cb.update_class_block(course, empty, "260911", text, {})
+    assert calls == [] and "class-260911" not in cb.blocks(out)
+
+
+def test_label_does_not_double_the_word_class(course, monkeypatch):
+    past = course / "260909 Class 4 - Equity"
+    ask, calls = _fake_ask(["**Lenses and frameworks introduced:** a\n**Key takeaways:**\n- b\n"])
+    monkeypatch.setattr(cb, "_ask", ask)
+    out = cb.update_class_block(course, past, "260909", cb.TEMPLATE.format(name="X", code="X"), {})
+    assert "### Class 4 - Equity\n" in out and "Class Class" not in out

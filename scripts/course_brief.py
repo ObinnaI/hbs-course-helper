@@ -33,6 +33,7 @@ Run standalone:
 """
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -280,6 +281,24 @@ def _notes_md(session_dir: Path) -> "Path | None":
     return None
 
 
+def notes_text(session_dir: Path) -> "tuple[str, str] | None":
+    """
+    (name, text) of the class's notes: the Markdown twin when there is one,
+    else the text of a Word cheat sheet. Adopted folders only have the .docx,
+    and handing the model a filename it cannot read produced a complaint
+    where a brief entry should have been.
+    """
+    md = _notes_md(session_dir)
+    if md:
+        return md.name, md.read_text(errors="replace")
+    for f in sorted(session_dir.glob("*.docx")):
+        if canvas_common.is_notes_file(f.name) and not f.name.startswith("~$"):
+            text = ai_config.extract_text(f)
+            if text.strip():
+                return f.name, text
+    return None
+
+
 def _post_class_files(session_dir: Path) -> list:
     """Files that were not part of the notes' readings: wrap-ups, announcements."""
     meta = _load_json(session_dir / ".notes_meta.json")
@@ -319,25 +338,37 @@ def _class_inputs(session_dir: Path, date_str: str) -> "tuple[str, list, str]":
     parts = []
     on_disk = []
     fp = [date_str]
-    md = _notes_md(session_dir)
-    if md:
-        text = md.read_text(errors="replace")
-        parts.append(f"=== CHEAT SHEET ({md.name}) ===\n{bottom_lines(text, 6000)}")
-        fp.append(canvas_common.file_md5(md))
+    notes = notes_text(session_dir)
+    if notes:
+        name, text = notes
+        # A Markdown sheet has headings to skim; extracted Word text does not,
+        # so take its opening instead.
+        spine = bottom_lines(text, 6000) if name.endswith(".md") else text[:8000]
+        parts.append(f"=== CHEAT SHEET ({name}) — the student's own analysis ===\n{spine}")
+        fp.append(hashlib.md5(text.encode()).hexdigest())
     for f in _post_class_files(session_dir):
         fp.append(f.name + canvas_common.file_md5(f))
         if f.suffix.lower() == ".pdf":
             on_disk.append(f)
         else:
             parts.append(f"=== POST-CLASS: {f.name} ===\n{ai_config.extract_text(f)[:20000]}")
-    readings = [f.name for f in session_dir.iterdir()
+    readings = [f for f in sorted(session_dir.iterdir())
                 if f.is_file() and f.suffix.lower() in {".pdf", ".docx", ".pptx"}
-                and not canvas_common.is_notes_file(f.name)]
-    parts.append("=== READINGS THAT DAY ===\n" + "\n".join(f"- {r}" for r in readings))
+                and not canvas_common.is_notes_file(f.name) and not f.name.startswith("~$")]
+    if readings:
+        parts.append("=== READINGS THAT DAY ===\n" + "\n".join(f"- {r.name}" for r in readings))
+        # The Read tool handles PDFs; Word and PowerPoint arrive extracted.
+        for f in readings:
+            if f.suffix.lower() in (".docx", ".pptx"):
+                text = ai_config.extract_text(f)
+                if text.strip():
+                    parts.append(f"=== READING: {f.name} ===\n{text[:12000]}")
+        pdfs = [f for f in readings if f.suffix.lower() == ".pdf"]
+        if pdfs:
+            on_disk = pdfs + on_disk
     if on_disk:
-        parts.append("=== POST-CLASS FILES ON DISK (read with the Read tool) ===\n"
+        parts.append("=== FILES ON DISK (read with the Read tool; PDFs in ≤20-page chunks) ===\n"
                      + "\n".join(f"- {f.name}" for f in on_disk))
-    import hashlib
     return "\n\n".join(parts), on_disk, hashlib.md5("|".join(fp).encode()).hexdigest()[:12]
 
 
@@ -365,7 +396,13 @@ def update_class_block(course_folder: Path, session_dir: Path, date_str: str,
     key = f"class-{date_str}"
     if not force and state.get("classes", {}).get(date_str) == fingerprint and key in blocks(brief_text):
         return brief_text
+    if "=== CHEAT SHEET" not in context and "=== READING" not in context \
+            and "=== POST-CLASS" not in context and not on_disk:
+        # An empty folder (a syllabus day, a class whose files never synced):
+        # there is nothing to distil, and asking anyway yields a complaint.
+        return brief_text
     label = session_dir.name[7:] or date_str
+    label = re.sub(r"^(?:class|session)\s+", "", label, flags=re.IGNORECASE)
     system = ("You maintain the running knowledge base ('course brief') of one course for an HBS "
               "MBA student: what each class taught, in a form that can be applied to later cases.")
     try:
@@ -375,11 +412,26 @@ def update_class_block(course_folder: Path, session_dir: Path, date_str: str,
         print(f"    ✗ {session_dir.name}: brief entry not written ({e})")
         return brief_text
     text = text.strip()
+    if not looks_like_entry(text):
+        # The model asked a question or explained why it could not proceed.
+        # Leave the old block (if any) and the fingerprint alone so it is
+        # retried next run, rather than filing the complaint as course memory.
+        print(f"    ✗ {session_dir.name}: response was not a brief entry — skipped "
+              f"({text[:80]!r})")
+        return brief_text
     if not text.startswith("###"):
         text = f"### Class {label}\n" + text
     state.setdefault("classes", {})[date_str] = fingerprint
     print(f"    + brief entry: {session_dir.name}")
     return upsert_block(brief_text, key, text)
+
+
+_ENTRY_MARKERS = ("**Lenses and frameworks", "**Key takeaways", "**Threads to carry forward")
+
+
+def looks_like_entry(text: str) -> bool:
+    """A brief entry has the requested bold section labels; a complaint does not."""
+    return sum(m in text for m in _ENTRY_MARKERS) >= 2
 
 
 def _roll_up_threads(brief_text: str) -> str:

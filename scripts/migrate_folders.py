@@ -217,6 +217,23 @@ def report(plans: list, root: Path, cc) -> str:
     return "\n".join(lines)
 
 
+def write_md_twin(docx: "Path | None") -> None:
+    """
+    A Markdown copy beside an adopted Word cheat sheet, so the brief-writer,
+    the podcast and the phone app can read it. Plain paragraphs only —
+    python-docx does not carry heading levels through extract_text.
+    """
+    if docx is None or docx.suffix.lower() != ".docx":
+        return
+    twin = docx.with_suffix(".md")
+    if twin.exists():
+        return
+    import ai_config
+    text = ai_config.extract_text(docx)
+    if text.strip():
+        twin.write_text(f"# {docx.stem}\n\n_(text of {docx.name})_\n\n{text}\n")
+
+
 def apply(plans: list, root: Path, cr, cc, path_config, force: bool = False) -> int:
     log_path = path_config.CONFIG_FILE.parent / "migrations.json"
     try:
@@ -244,6 +261,7 @@ def apply(plans: list, root: Path, cr, cc, path_config, force: bool = False) -> 
                            "assignments": [p.posting] if p.posting else [], "assignment": p.posting}
                 title = cc.session_title(session["assignments"])
                 existing = cc.notes_paths(p.dst, p.date_str, p.course, title).existing
+                write_md_twin(existing)
                 cr._write_notes_meta(p.dst, {
                     "assignments":       cr.session_hashes(session),
                     "prompt_hash":       cr.prompt_hash(p.course),
