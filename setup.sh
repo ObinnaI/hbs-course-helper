@@ -92,6 +92,20 @@ case "${1:-}" in
         install_job "com.hbs-coursework.mirror"
         echo "  Mirrors every 30 minutes (and now). Log: ~/Library/Logs/hbs-mirror.log"
         echo "  Set MIRROR_CLONE / MIRROR_DEST in .env if the defaults don't fit."
+        # Prove it actually runs: launchd has been seen to load a job and never
+        # start it, and a bare bash cannot read iCloud Drive until you allow it.
+        LOG="$HOME/Library/Logs/hbs-mirror.log"; : > "$LOG"
+        launchctl kickstart -k "gui/$(id -u)/com.hbs-coursework.mirror" 2>/dev/null || true
+        for _ in $(seq 1 20); do [ -s "$LOG" ] && break; sleep 1; done
+        if [ ! -s "$LOG" ]; then
+            warn "The mirror job did not start. Check: launchctl print gui/$(id -u)/com.hbs-coursework.mirror"
+        elif grep -q "Operation not permitted\|privacy block" "$LOG"; then
+            warn "macOS blocked access to iCloud Drive for /bin/bash."
+            echo "  System Settings → Privacy & Security → Full Disk Access → + → ⌘⇧G → /bin/bash"
+            echo "  then: launchctl kickstart -k gui/$(id -u)/com.hbs-coursework.mirror"
+        else
+            ok "Mirror job ran: $(tail -1 "$LOG")"
+        fi
         ;;
     *)
         echo "  Skipped. Re-run as './setup.sh --schedule' (run everything on this Mac)"

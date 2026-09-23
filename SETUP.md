@@ -137,3 +137,12 @@ copying the results into an iCloud folder when it is awake. See
 [Running in the cloud](README.md#running-in-the-cloud-no-mac-needed) in the
 README — it needs a private GitHub repo for the generated files and the same
 three credentials stored there as repository secrets.
+
+
+## Is the Mac mirror actually running?
+
+The mirror job (`./setup.sh --mirror`) should touch `~/.hbs-mirror/last_run` every 30 minutes and append a line to `~/Library/Logs/hbs-mirror.log`. If `last_run` is hours old:
+
+1. `launchctl print gui/$(id -u)/com.hbs-coursework.mirror` — `runs = 0` means launchd never started it; run `launchctl kickstart -k gui/$(id -u)/com.hbs-coursework.mirror`.
+2. If the log says `Operation not permitted` or `privacy block`, macOS is keeping a bare `/bin/bash` out of iCloud Drive. Grant it Full Disk Access: System Settings → Privacy & Security → Full Disk Access → **+** → ⌘⇧G → `/bin/bash` → Open, then kickstart again.
+3. `./setup.sh --mirror` does the kickstart and these checks for you and prints the fix.

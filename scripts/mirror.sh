@@ -50,7 +50,17 @@ STATE="$HOME/.hbs-mirror"
 LOG_PREFIX="[$(date '+%Y-%m-%d %H:%M')]"
 
 mkdir -p "$STATE"
+date '+%Y-%m-%dT%H:%M:%S' > "$STATE/last_run"
 [ -d "$CLONE/.git" ] || { echo "$LOG_PREFIX no clone at $CLONE — git clone the data repo there first"; exit 1; }
+# launchd runs this as a bare /bin/bash, and macOS keeps iCloud Drive behind
+# its privacy gate. Without Full Disk Access the first touch of $DEST fails
+# with "Operation not permitted"; say so plainly instead of dying mid-rsync.
+if ! ls "$(dirname "$DEST")" >/dev/null 2>&1; then
+    echo "$LOG_PREFIX cannot read $(dirname "$DEST") — macOS privacy block."
+    echo "$LOG_PREFIX fix: System Settings → Privacy & Security → Full Disk Access → + → ⌘⇧G → /bin/bash,"
+    echo "$LOG_PREFIX then: launchctl kickstart -k gui/$(id -u)/com.hbs-coursework.mirror"
+    exit 1
+fi
 mkdir -p "$DEST"
 
 # ── lock (macOS has no flock; a directory mkdir is atomic). Stale after 3 h. ──
@@ -120,6 +130,8 @@ while IFS= read -r rel; do
     [ -n "$rel" ] || continue
     stat -f %m "$DEST/$rel" > "$STATE/xlsx.$(mtime_key "$rel").mtime" 2>/dev/null || true
 done <<< "$(trackers)"
+
+echo "$LOG_PREFIX mirrored $(git rev-parse --short HEAD) → $DEST"
 
 # ── 4. podcast fallback ───────────────────────────────────────────────────────
 STATUS="$CLONE/claude/podcast_status.json"
