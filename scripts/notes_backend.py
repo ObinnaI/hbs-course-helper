@@ -18,7 +18,7 @@ text, the course brief — arrives on stdin.
 Settings (environment or .env):
   NOTES_BACKEND   api | claude-code        default claude-code
   NOTES_MODEL     model for claude-code    default claude-opus-5
-  NOTES_MAX_TURNS                          default 60
+  NOTES_MAX_TURNS                          default 150
   NOTES_TIMEOUT   seconds per session      default 1500
 """
 
@@ -135,7 +135,7 @@ def generate_with_claude_code(cwd: Path, system_prompt: str, instruction: str,
             "the `claude` CLI is not installed — npm install -g @anthropic-ai/claude-code")
 
     model_name = model_name or model(cfg)
-    max_turns  = _setting("NOTES_MAX_TURNS", "60", cfg)
+    max_turns  = _setting("NOTES_MAX_TURNS", "150", cfg)
     timeout    = float(_setting("NOTES_TIMEOUT", "1500", cfg))
 
     env = dict(os.environ)
