@@ -109,7 +109,7 @@ def build_events(courses: dict, now: "datetime | None" = None, llm: bool = True)
             "uid":         f"{cid}-{a.get('id')}@{UID_DOMAIN}",
             "dtstart":     _start(a["due_at"]),
             "sort":        _utc(a["due_at"]),
-            "summary":     f"{'✓ ' if done else 'DUE: '}{name} ({abbrev})",
+            "summary":     f"{'✓ ' if done else '' if name.upper().startswith('DUE') else 'DUE: '}{name} ({abbrev})",
             "description": cr.strip_html(a.get("description") or "")[:800],
             "url":         a.get("html_url", ""),
             "fingerprint": _fingerprint(a),

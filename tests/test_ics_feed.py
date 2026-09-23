@@ -64,6 +64,8 @@ def test_all_day_and_submitted(monkeypatch, tmp_path):
     posts = [
         {"id": 20, "name": "Personality Questionnaire", "due_at": "2026-10-01T03:59:59Z",
          "submission_types": ["online_url"], "description": "", "submission": {"workflow_state": "unsubmitted"}},
+        {"id": 22, "name": "DUE: Turn in Your Team Launch Document", "due_at": "2026-09-12T03:59:00Z",
+         "submission_types": ["online_upload"], "description": "", "submission": {}},
         {"id": 21, "name": "Pre-Class Poll: Class 4", "due_at": "2026-09-16T17:00:00Z",
          "submission_types": ["online_quiz"], "description": "", "submission": {"workflow_state": "pending_review"}},
     ]
@@ -72,6 +74,7 @@ def test_all_day_and_submitted(monkeypatch, tmp_path):
     q = text.split("UID:1-20@hbs-course-helper")[1].split("END:VEVENT")[0]
     assert "DTSTART;VALUE=DATE:20260930" in q and "DURATION" not in q
     assert "SUMMARY:DUE: Personality Questionnaire (LTV)" in q
+    assert "SUMMARY:DUE: Turn in Your Team Launch Document (LTV)" in text and "DUE: DUE:" not in text
     poll = text.split("UID:1-21@hbs-course-helper")[1].split("END:VEVENT")[0]
     assert "SUMMARY:✓ Pre-Class Poll: Class 4 (LTV)" in poll and "DTSTART:20260916T170000Z" in poll
 
