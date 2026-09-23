@@ -29,6 +29,8 @@ case "${FAKE_CLAUDE_MODE:-ok}" in
     echo "Some notice first"; printf '{"type":"result","is_error":false,"result":"ok text"}\n' ;;
   empty)
     printf '{"type":"result","is_error":false,"result":""}\n' ;;
+  maxturns)
+    printf '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"","api_error_status":null}\n'; exit 1 ;;
 esac
 '''
 
@@ -192,3 +194,74 @@ def test_api_backend_still_selectable(notes_env, monkeypatch):
     cr.generate_notes(_session(d))
     assert calls == {"n": 1}
     assert (d / "Cheat Sheet - Pave (A).md").read_text().endswith("# api notes\n")
+
+
+def test_failure_message_carries_subtype_and_exit_code(fake_claude, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "maxturns")
+    with pytest.raises(nb.NotesUnavailable) as e:
+        nb.generate_with_claude_code(fake_claude, "sys", "do", "ctx", "claude-opus-5")
+    assert "subtype=error_max_turns" in str(e.value) and "(exit 1)" in str(e.value)
+
+
+# ── readings guard ────────────────────────────────────────────────────────────
+
+CASE_DESC = ('<p>Read the cases <a href="https://hbs.instructure.com/courses/1/files/77?verifier=ab">MFS</a>'
+             ' and come prepared.</p>')
+
+
+def _case_session(session_dir, hours_ahead, desc=CASE_DESC):
+    from datetime import datetime, timedelta
+    due = datetime.now(tz=cr.BOSTON) + timedelta(hours=hours_ahead)
+    posting = {"id": 7, "name": "GTD | Class 7: MFS", "description": desc,
+               "submission_types": ["none"], "due_at": due.strftime("%Y-%m-%dT%H:%M:%SZ")}
+    return {"abbrev": "LTV", "course_id": 1, "date_str": session_dir.name[:6], "due_dt": due,
+            "assignments": [posting], "assignment": posting}
+
+
+def test_readings_expected_and_missing(notes_env):
+    d = notes_env.parent / "260924 Class 7 - MFS"; d.mkdir()
+    (d / "260921 Announcement - Note.md").write_text("# hi")
+    (d / "260924 3) Video (YouTube).txt").write_text("link")
+    s = _case_session(d, 72)
+    assert cr.readings_expected(s["assignments"])
+    assert cr.readings_missing(s, d)
+    (d / "Massachusetts Financial Services.pdf").write_bytes(b"%PDF")
+    assert cr.readings_missing(s, d) is None
+    guest = _case_session(d, 72, desc="<p>Guest speaker: bring questions.</p>")
+    assert not cr.readings_expected(guest["assignments"])
+
+
+def test_notes_deferred_until_readings_arrive(notes_env, capsys):
+    d = notes_env.parent / "260924 Class 7 - MFS"; d.mkdir()
+    cr.generate_notes(_case_session(d, 72))
+    assert not list(d.glob("Cheat Sheet*"))
+    assert "notes deferred" in capsys.readouterr().out
+    assert cr._NOTES_MADE == 0
+
+    (d / "Massachusetts Financial Services.pdf").write_bytes(b"%PDF-1.4 fake")
+    cr.generate_notes(_case_session(d, 72))
+    assert (d / "Cheat Sheet - MFS.docx").exists()
+    assert "Generated without the readings" not in (d / "Cheat Sheet - MFS.md").read_text()
+
+
+def test_notes_generated_with_banner_close_to_class(notes_env, capsys):
+    d = notes_env.parent / "260924 Class 7 - MFS"; d.mkdir()
+    cr.generate_notes(_case_session(d, 10))
+    assert "generating from the posting alone" in capsys.readouterr().out
+    md = (d / "Cheat Sheet - MFS.md").read_text()
+    assert "Generated without the readings" in md and "## Body" in md
+
+
+def test_podcast_pass_waits_for_readings(notes_env, monkeypatch, capsys):
+    d = notes_env.parent / "260924 Class 7 - MFS"; d.mkdir()
+    waiting = _case_session(d, 72)
+    ready = _case_session(notes_env, 72)          # notes_env has a PDF
+    monkeypatch.setattr(cr, "get_upcoming_sessions", lambda **k: [waiting, ready])
+    made = []
+    monkeypatch.setattr(cr, "generate_podcast_for_session", lambda s: made.append(s["date_str"]))
+    status = []
+    monkeypatch.setattr(cr, "_write_podcast_status", lambda pending: status.append([s["date_str"] for s in pending]))
+    cr.run_podcast_pass(7)
+    assert made == ["260916"]
+    assert status[-1] == ["260916"]                # the waiting one is not "pending"
+    assert "wait for their readings: LTV 260924" in capsys.readouterr().out

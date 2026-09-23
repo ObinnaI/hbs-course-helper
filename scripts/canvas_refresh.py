@@ -418,23 +418,53 @@ def sync_course_files(course_id: int, abbrev: str, target_date_str: str | None =
                 if canvas_download(f["url"], dest):
                     print(f"    ↓ [canvas folder] {f['display_name']}")
 
-        # Files linked in assignment description
-        desc = a.get("description") or ""
-        ids = re.findall(
-            rf"instructure\.com/(?:courses/{course_id}/)?files/(\d+)", desc
-        )
-        for fid_str in ids:
-            fid = int(fid_str)
-            if fid in file_by_id:
-                f = file_by_id[fid]
-                fname = safe_name(f["display_name"])
-                if Path(fname).suffix.lower() in SLIDE_EXTS:
-                    slides_dir.mkdir(parents=True, exist_ok=True)
-                    dest = slides_dir / fname
-                else:
-                    dest = session_dir / fname
-                if canvas_download(f["url"], dest):
-                    print(f"    ↓ [linked] {f['display_name']}")
+        # Files linked in the posting. The course file listing is often empty
+        # for students (the professor's files live in folders the listing does
+        # not expose), so anything not listed is fetched by id with the link's
+        # own verifier token.
+        for f in linked_files(a.get("description") or "", file_by_id):
+            fname = safe_name(f["display_name"])
+            if Path(fname).suffix.lower() in SLIDE_EXTS:
+                slides_dir.mkdir(parents=True, exist_ok=True)
+                dest = slides_dir / fname
+            else:
+                dest = session_dir / fname
+            if canvas_download(f["url"], dest):
+                print(f"    ↓ [linked] {f['display_name']}")
+
+# ── Files linked from Canvas HTML ────────────────────────────────────────────
+
+_FILE_LINK_RE = re.compile(
+    r"instructure\.com/(?:courses/\d+/)?files/(\d+)(?:[^\"'\s<>]*?[?&](?:amp;)?verifier=([0-9a-f-]+))?",
+    re.I)
+
+
+def linked_files(html: str, file_by_id: dict | None = None) -> list[dict]:
+    """
+    Canvas file records for every /files/<id> link in a posting, announcement
+    or page: from the course listing when it has them, else fetched one by one
+    with the link's verifier token (which is what lets a student open a file
+    whose folder the listing hides). Each id once, in link order; files that
+    cannot be fetched are reported and skipped.
+    """
+    file_by_id = file_by_id or {}
+    out, seen = [], set()
+    for m in _FILE_LINK_RE.finditer(html or ""):
+        fid, verifier = int(m.group(1)), m.group(2)
+        if fid in seen:
+            continue
+        seen.add(fid)
+        f = file_by_id.get(fid)
+        if f is None:
+            f = canvas_get(f"files/{fid}", {"verifier": verifier} if verifier else None)
+        if not isinstance(f, dict) or not f.get("url"):
+            print(f"    ✗ [linked] file {fid}: not accessible")
+            continue
+        if not f.get("display_name"):
+            f = dict(f, display_name=f.get("filename") or f"file-{fid}")
+        out.append(f)
+    return out
+
 
 # ── Post-class materials: look back, not just forward ────────────────────────
 #
@@ -577,12 +607,13 @@ def sync_announcements(course_id: int, abbrev: str, course_folder: Path,
         if _save_text(dest_dir, f"{yymmdd(posted)} Announcement - {title}", text):
             print(f"    ↓ [announcement] {title}")
             n += 1
-        for att in a.get("attachments") or []:
-            if att.get("url"):
-                dest = dest_dir / safe_name(att.get("display_name") or att.get("filename") or "attachment")
-                if canvas_download(att["url"], dest):
-                    print(f"    ↓ [announcement file] {dest.name}")
-                    n += 1
+        files = [att for att in a.get("attachments") or [] if att.get("url")]
+        files += linked_files(a.get("message") or "")
+        for att in files:
+            dest = dest_dir / safe_name(att.get("display_name") or att.get("filename") or "attachment")
+            if canvas_download(att["url"], dest):
+                print(f"    ↓ [announcement file] {dest.name}")
+                n += 1
         seen[key] = posted.isoformat()
     return n
 
@@ -865,6 +896,47 @@ def _reading_files(session_dir: Path) -> list[Path]:
     )
 
 
+# A posting that links readings (HBSP, Canvas files) or tells you to read a
+# case is not ready for notes until at least one of those files is on disk.
+_READING_HINT_RE = re.compile(
+    r"hbsp\.harvard\.edu|instructure\.com/(?:courses/\d+/)?files/\d+"
+    r"|\b(?:read|reading|readings|case|cases|chapter|article)\b", re.I)
+SUBSTANTIVE_EXTS = {".pdf", ".docx", ".pptx", ".doc", ".ppt", ".xlsx", ".csv"}
+READINGS_GRACE_HOURS = 24
+
+
+def readings_expected(assignments) -> bool:
+    """True when a posting points at readings or says to read something."""
+    return any(_READING_HINT_RE.search(a.get("description") or "") for a in assignments)
+
+
+def substantive_readings(files) -> list:
+    """Case-like files: not announcements, YouTube stubs or markdown twins."""
+    return [f for f in files
+            if f.suffix.lower() in SUBSTANTIVE_EXTS and "Announcement -" not in f.name]
+
+
+def readings_missing(session: dict, session_dir: Path) -> "str | None":
+    """
+    Reason the session is not ready, or None. Readings are expected from the
+    posting but none has arrived on disk — typical when a professor links the
+    case late or a download failed. Generating anyway produces a cheat sheet
+    (and a podcast) built on nothing.
+    """
+    if not readings_expected(_session_assignments(session)):
+        return None
+    if substantive_readings(_reading_files(session_dir)):
+        return None
+    return "the posting points at readings but none is on disk yet"
+
+
+def _hours_until(session: dict) -> "float | None":
+    due = session.get("due_dt")
+    if not due:
+        return None
+    return (due - datetime.now(tz=due.tzinfo or BOSTON)).total_seconds() / 3600
+
+
 def build_master_prompt(abbrev: str) -> str:
     """Master prompt with the course's refinement injected at [CLASS-SPECIFIC NOTES]."""
     master = PROMPT_FILE.read_text() if PROMPT_FILE.exists() else ""
@@ -1048,6 +1120,20 @@ def generate_notes(session: dict):
         print(f"    ⚠ Nothing to generate for {date_str} {abbrev} — skipping")
         return
 
+    banner = ""
+    missing = readings_missing(session, session_dir)
+    if missing:
+        hours = _hours_until(session)
+        if hours is not None and hours > READINGS_GRACE_HOURS:
+            print(f"    ⚠ {missing} — notes deferred until they arrive "
+                  f"(or {READINGS_GRACE_HOURS} h before class)")
+            return
+        when = f"class is in {hours:.0f} h" if hours is not None else "class time unknown"
+        print(f"    ⚠ {missing}; {when} — generating from the posting alone")
+        banner = ("> ⚠ **Generated without the readings.** None of the files the Canvas "
+                  "posting points at could be downloaded before class; everything below "
+                  "comes from the posting text and course context alone.\n\n")
+
     if _NOTES_BLOCKED:
         print(f"    – skipped: {_NOTES_BLOCKED}")
         return
@@ -1090,7 +1176,8 @@ def generate_notes(session: dict):
         return
     if result is None:
         return
-    _finish_notes(session, session_dir, output_file, md_file, reading_files, skipped, result)
+    _finish_notes(session, session_dir, output_file, md_file, reading_files, skipped,
+                  banner + result)
 
 
 # ── Notes: run-level state ────────────────────────────────────────────────────
@@ -1502,6 +1589,14 @@ def run_podcast_pass(horizon_days: int = PODCAST_HORIZON_DAYS,
     print(f"\n{'─'*55}")
     print(f"  PODCASTS — next {horizon_days} days")
     print(f"{'─'*55}")
+    # An episode built on nothing is worse than a late one: a session whose
+    # readings have not arrived waits, and does not count as pending for the
+    # Mac fallback either.
+    waiting = [s for s in pending if readings_missing(s, _podcast_path(s).parent)]
+    if waiting:
+        print(f"  {len(waiting)} session(s) wait for their readings: "
+              + ", ".join(f"{s['abbrev']} {s['date_str']}" for s in waiting))
+        pending = [s for s in pending if s not in waiting]
     if not pending:
         print(f"  All {len(sessions)} session(s) already have one.")
         _write_podcast_status([])

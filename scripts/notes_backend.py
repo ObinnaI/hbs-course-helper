@@ -171,8 +171,14 @@ def generate_with_claude_code(cwd: Path, system_prompt: str, instruction: str,
     data = _parse_result(proc.stdout)
     text = data.get("result") if isinstance(data.get("result"), str) else ""
     if proc.returncode != 0 or data.get("is_error"):
-        msg = " ".join(s for s in (text, proc.stderr) if s).strip()[:400]
-        raise classify_failure(msg)(msg or f"claude exited with status {proc.returncode}")
+        bits = [text.strip(), (proc.stderr or "").strip()[-400:]]
+        for key in ("subtype", "api_error_status"):
+            if data.get(key) not in (None, "", "success"):
+                bits.append(f"{key}={data[key]}")
+        if not data and (proc.stdout or "").strip():
+            bits.append("stdout: " + proc.stdout.strip()[-300:])
+        msg = " ".join(b for b in bits if b).strip()[:600]
+        raise classify_failure(msg)(f"{msg or 'no output'} (exit {proc.returncode})")
     if not text.strip():
         raise NotesUnavailable("claude returned an empty result")
     return text, (data.get("usage") or {})
