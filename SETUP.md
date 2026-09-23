@@ -114,6 +114,8 @@ launchctl unload ~/Library/LaunchAgents/com.canvas-course-helper.*.plist
 
 ---
 
+**Deadlines in Todoist and on your calendar.** In Todoist → Settings → Integrations → Developer, copy your API token, then (locally) put `TASKS_BACKEND=todoist` and `TODOIST_API_TOKEN=…` in `.env`, or (cloud) run `gh -R <you>/<data-repo> secret set TODOIST_API_TOKEN` and `gh variable set TASKS_BACKEND -b todoist`. Preview with `python3 scripts/canvas_refresh.py --tasks-only --dry-run`. For the calendar side set `CALENDAR_BACKEND=ics`, publish `claude/canvas.ics` (the cloud workflow does this to a secret Gist when `GIST_ID`/`GIST_TOKEN` are set) and add the raw URL as an ICS source in CalendarBridge or Google Calendar → Other calendars → From URL. Check what will be treated as a deadline first: `python3 scripts/deliverables.py --classify`.
+
 ## When something breaks
 
 | What you see | What to do |

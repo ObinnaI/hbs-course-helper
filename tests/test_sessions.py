@@ -205,3 +205,52 @@ def test_write_markdown(tmp_path):
     text = out.read_text()
     assert text.startswith("# Title Here\n\n**Generated:** now  \n**Canvas:** C  \n\n## Body")
     assert text.endswith("- one\n")
+
+
+# ── classification routed through deliverables.py ─────────────────────────────
+
+def test_text_entry_class_posting_is_a_session(patch_courses, monkeypatch, capsys):
+    posts = [
+        _assignment(1, "Industrial Policy at Scale: Electric Vehicles", ["online_text_entry"], hour=10,
+                    desc="<p>Introduction … Materials Case: Tariffs, Bans, and Subsidies</p>"),
+        _assignment(2, "GEO Assignment #1: Early Semester Action Items", ["not_graded"], hour=12,
+                    desc="<p>Sign the waiver</p>"),
+    ]
+    monkeypatch.setattr(cr, "canvas_get", lambda *a, **k: posts)
+    monkeypatch.setattr(cr, "_OVERRIDES", {})
+    sessions = cr.get_upcoming_sessions(horizon_days=2)
+    assert [a["id"] for a in sessions[0]["assignments"]] == [1]
+    assert "skipping deliverable 'GEO Assignment #1" in capsys.readouterr().out
+
+
+def test_class_day_hand_in_joins_the_session(patch_courses, monkeypatch):
+    posts = [_assignment(6, "Class 7: Midterm Presentation DUE", ["online_upload"], hour=13)]
+    monkeypatch.setattr(cr, "canvas_get", lambda *a, **k: posts)
+    monkeypatch.setattr(cr, "_OVERRIDES", {})
+    assert [a["id"] for a in cr.get_upcoming_sessions(horizon_days=2)[0]["assignments"]] == [6]
+    assert cr.get_upcoming_sessions(horizon_days=2, kinds=("deliverable",))[0]["assignments"][0]["id"] == 6
+
+
+def test_quiet_day_still_syncs_tasks(patch_courses, monkeypatch):
+    monkeypatch.setattr(cr, "get_upcoming_sessions", lambda **k: [])
+    calls = []
+    monkeypatch.setattr(cr, "_sync_tasks", lambda dry_run=False: calls.append(dry_run))
+    cr.run_daily()
+    assert calls == [False]
+
+
+def test_sync_tasks_gating(monkeypatch, capsys):
+    monkeypatch.delenv("TASKS_BACKEND", raising=False)
+    cr._sync_tasks()
+    assert "skipped (TASKS_BACKEND=none)" in capsys.readouterr().out
+    monkeypatch.setenv("TASKS_BACKEND", "todoist")
+    monkeypatch.delenv("TODOIST_API_TOKEN", raising=False)
+    cr._sync_tasks()
+    assert "TODOIST_API_TOKEN not set" in capsys.readouterr().out
+    monkeypatch.setenv("TODOIST_API_TOKEN", "x")
+    import todoist_sync
+    def boom(dry_run=False):
+        raise RuntimeError("kaboom")
+    monkeypatch.setattr(todoist_sync, "run", boom)
+    cr._sync_tasks()
+    assert "Task sync failed: kaboom" in capsys.readouterr().out

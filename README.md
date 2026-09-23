@@ -16,7 +16,9 @@ Works with any Canvas LMS instance (Harvard Business School, Stanford GSB, Whart
 | `canvas_organize.py` | Route files to correct folders (slides to `Slides/`, etc.) and move duplicates to Trash. Runs automatically after every sync. |
 | `weekly_overview.py` | Generate `Overview/YYMMDD Overview.docx` — Mon–Fri breakdown of sessions and submissions for the upcoming week. |
 | `calendar_sync.py` | Sync Canvas assignment deadlines to Apple Calendar ("Canvas Assignments"). Idempotent. Mac only. |
-| `ics_feed.py` | Write the same deadlines as a subscribable `canvas.ics` feed (what the cloud run publishes). |
+| `ics_feed.py` | Write submission deadlines as a subscribable `canvas.ics` feed (what the cloud run publishes). |
+| `deliverables.py --classify` | Show, for every posting, whether it is a class session or something to hand in — and why. Pin mistakes with `deliverable_overrides`. |
+| `todoist_sync.py` | Push every deliverable into Todoist (project `HBS`, one section per course); closes tasks when Canvas shows a submission. `--dry-run` to preview. |
 | `participation_tracker.py` | Build/refresh `Participation Tracker.xlsx` — all courses side by side with a live spoke/entered rate per course. |
 | `path_config.py --discover` | Show the courses Canvas returns and the folder each would get, without creating anything. Run before the first sync. |
 | `cheat_sheet.py YYMMDD COURSE` | Generate the cheat sheet (`.docx` + `.md`) on demand for a specific class day. |
@@ -178,7 +180,15 @@ On refresh, existing ratings are preserved (matched by the course name in the co
 
 **First-time setup:** Create a calendar named exactly `Canvas Assignments` in Apple Calendar (or in iCloud/Google Calendar and let it sync). Then run `calendar_sync.py` once to populate it.
 
-**No Mac? Use the feed instead.** `ics_feed.py` (or `CALENDAR_BACKEND=ics`) writes `canvas.ics` next to `canvas_config.json`: every deliverable as an event with a stable UID, so a moved due date updates the existing event rather than adding one. Host it anywhere a calendar app can fetch a URL — the cloud workflow below publishes it to a secret Gist — and subscribe once in Calendar (File → New Calendar Subscription).
+**No Mac? Use the feed instead.** `ics_feed.py` (or `CALENDAR_BACKEND=ics`) writes `canvas.ics` next to `canvas_config.json`: every deliverable as a `DUE: …` event with a stable UID, so a moved due date updates the existing event rather than adding one. Deadlines at 23:59 become all-day events; a submitted one keeps its event with a `✓` prefix. Class sessions are never in it (Canvas's own calendar has those). Host it anywhere a calendar app can fetch a URL — the cloud workflow below publishes it to a secret Gist — and subscribe once in Calendar, Google Calendar (Other calendars → From URL) or CalendarBridge (ICS source → your primary calendar).
+
+**What counts as a deliverable** is decided by `deliverables.py`, not by Canvas's `submission_types` alone: at HBS one course posts class sessions as text entries and another posts real to-dos as `not_graded`. Rules cover almost everything; the few uncertain postings are put to Claude once (cached in `claude/deliverables_state.json`), and `deliverable_overrides` in `canvas_config.json` pins any posting by id: `{"1177030": "deliverable", "1175395": "session"}`. Run `python3 scripts/deliverables.py --classify` to audit. The same decision feeds the cheat-sheet pipeline, so a class posted as a text entry still gets its folder and notes.
+
+---
+
+## Tasks in Todoist
+
+With `TASKS_BACKEND=todoist` and a `TODOIST_API_TOKEN`, every deliverable due in the next 120 days becomes a task in the `TODOIST_PROJECT` (default `HBS`), in a section named after its course, labelled `hbs` and the course code, due at the Canvas deadline (all-day when Canvas says 23:59), with the Canvas link and posting text in the description. The task closes by itself once Canvas records your submission or the professor removes the posting; a task you tick or delete yourself is never reopened or recreated, and nothing is ever deleted. State lives in `claude/todoist_state.json`, so a lost state file is rebuilt from the `Canvas #<id>` trailer on each task rather than duplicating. `python3 scripts/canvas_refresh.py --tasks-only --dry-run` shows the changes a run would make.
 
 ---
 
@@ -376,9 +386,11 @@ The workflow lives in the *data* repo: forks have scheduled workflows off by def
 | `COURSEWORK_ROOT=$GITHUB_WORKSPACE` | the data repo checkout *is* the coursework folder |
 | `CANVAS_CONFIG_FILE=…/claude/canvas_config.json` | config persists in the data repo, not the throwaway code checkout |
 | `CALENDAR_BACKEND=ics` | write `claude/canvas.ics`; a later step publishes it to a secret Gist |
+| `TASKS_BACKEND=todoist` + `TODOIST_API_TOKEN` (secret) | push deliverables to Todoist (`TODOIST_PROJECT`, default `HBS`) |
+| `CLASSIFY_MODEL` | model for the deliverable tie-break (default `claude-sonnet-5`) |
 | `NOTEBOOKLM_AUTH_JSON` (secret) | the contents of `~/.notebooklm/profiles/default/storage_state.json` after `notebooklm login` |
 
-Secrets: `CANVAS_API_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token` on the Mac; one year), `GIST_TOKEN` (a classic PAT with only the `gist` scope), `NOTEBOOKLM_AUTH_JSON`. Variables: `CANVAS_BASE_URL`, `GIST_ID`, `NOTES_MODEL`, `NOTES_MAX_PER_RUN`, `PODCAST_MAX_PER_RUN`. The full workflow is in the data repo's `.github/workflows/refresh.yml`; it installs Claude Code on the runner and warns when notes were skipped for a login or usage-limit reason, and when the number of courses Canvas returns changes (the January nudge).
+Secrets: `CANVAS_API_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token` on the Mac; one year), `GIST_TOKEN` (a classic PAT with only the `gist` scope), `NOTEBOOKLM_AUTH_JSON`, `TODOIST_API_TOKEN`. Variables: `CANVAS_BASE_URL`, `GIST_ID`, `CALENDAR_BACKEND`, `TASKS_BACKEND`, `TODOIST_PROJECT`, `CLASSIFY_MODEL`, `NOTES_MODEL`, `NOTES_MAX_PER_RUN`, `PODCAST_MAX_PER_RUN`. The full workflow is in the data repo's `.github/workflows/refresh.yml`; it installs Claude Code on the runner and warns when notes were skipped for a login or usage-limit reason, and when the number of courses Canvas returns changes (the January nudge).
 
 **Bootstrap once, locally**, so the first cloud run finds the folder names you want:
 

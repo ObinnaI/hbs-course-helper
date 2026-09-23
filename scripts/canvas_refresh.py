@@ -241,6 +241,26 @@ class_number = canvas_common.class_number
 # with an odd submission type is not silently dropped.
 SESSION_KINDS = ("session", "ambiguous")
 
+_OVERRIDES: "dict | None" = None
+
+
+def posting_kind(a: dict) -> str:
+    """
+    deliverables.classify_posting with the rules only (no Claude call): the
+    session path must stay deterministic and free. `both` is a class day that
+    is also a hand-in.
+    """
+    global _OVERRIDES
+    import deliverables
+    if _OVERRIDES is None:
+        _OVERRIDES = deliverables.load_overrides()
+    return deliverables.classify_posting(a, _OVERRIDES)[0]
+
+
+def _kind_matches(kind: str, kinds: tuple) -> bool:
+    expanded = {"session", "deliverable"} if kind == "both" else {kind}
+    return bool(expanded & set(kinds))
+
 
 def _assignment_sort_key(a: dict):
     return (a.get("due_at") or "", a.get("id") or 0)
@@ -274,8 +294,8 @@ def get_upcoming_sessions(horizon_days: int,
             dt = boston_date(a["due_at"])
             if dt < now or dt > cutoff:
                 continue
-            kind = canvas_common.classify_submission(a.get("submission_types"))
-            if kind not in kinds:
+            kind = posting_kind(a)
+            if not _kind_matches(kind, kinds):
                 subs = "/".join(a.get("submission_types") or [])
                 print(f"    – {abbrev} {yymmdd(dt)}: not a class session, skipping "
                       f"{kind} '{a.get('name', '')[:50]}' ({subs})")
@@ -305,7 +325,7 @@ def assignments_on(course_id: int, date_str: str,
     for a in canvas_get(f"courses/{course_id}/assignments", {"per_page": 100}):
         if not a.get("due_at") or yymmdd(boston_date(a["due_at"])) != date_str:
             continue
-        if canvas_common.classify_submission(a.get("submission_types")) not in kinds:
+        if not _kind_matches(posting_kind(a), kinds):
             continue
         out.append(a)
     out.sort(key=_assignment_sort_key)
@@ -505,7 +525,7 @@ def class_dates(course_id: int) -> dict:
     for a in canvas_get(f"courses/{course_id}/assignments", {"per_page": 100}):
         if not a.get("due_at"):
             continue
-        if canvas_common.classify_submission(a.get("submission_types")) not in SESSION_KINDS:
+        if not _kind_matches(posting_kind(a), SESSION_KINDS):
             continue
         cn = class_number(a.get("name", ""))
         if cn is None:
@@ -632,8 +652,7 @@ def sync_post_class_materials(days: int = LOOKBACK_DAYS) -> None:
                 if not a.get("due_at"):
                     continue
                 dt = boston_date(a["due_at"])
-                if since <= dt < now and \
-                        canvas_common.classify_submission(a.get("submission_types")) in SESSION_KINDS:
+                if since <= dt < now and _kind_matches(posting_kind(a), SESSION_KINDS):
                     sync_course_files(course_id, abbrev, target_date_str=yymmdd(dt))
             total += sync_modules(course_id, abbrev, course_folder, synced)
             total += sync_announcements(course_id, abbrev, course_folder, synced, days)
@@ -1434,6 +1453,23 @@ def _sync_calendar() -> None:
         print(f"  Calendar sync skipped (CALENDAR_BACKEND={backend})")
 
 
+def _sync_tasks(dry_run: bool = False) -> None:
+    """Deliverables → Todoist when TASKS_BACKEND=todoist and a token is set."""
+    backend = (cfg("TASKS_BACKEND") or "none").lower()
+    print("\n  Syncing tasks...")
+    if backend != "todoist":
+        print(f"  Task sync skipped (TASKS_BACKEND={backend})")
+        return
+    if not cfg("TODOIST_API_TOKEN"):
+        print("  Task sync skipped: TODOIST_API_TOKEN not set")
+        return
+    try:
+        import todoist_sync
+        todoist_sync.run(dry_run=dry_run)
+    except Exception as e:
+        print(f"  ⚠ Task sync failed: {e}")
+
+
 # ── Podcast generation (wraps podcast_gen.py) ─────────────────────────────────
 
 # Set the first time NotebookLM rejects the stored login this run. Every later
@@ -1645,6 +1681,7 @@ def run_daily(skip_prompt_regen: bool = False, with_podcast: bool = False,
 
     if not sessions:
         print("  No upcoming sessions in the next 2 days.")
+        _sync_tasks()          # deadlines move on quiet days too
         return
 
     for s in sessions:
@@ -1689,6 +1726,7 @@ def run_daily(skip_prompt_regen: bool = False, with_podcast: bool = False,
 
     print("\n  Syncing calendar...")
     _sync_calendar()
+    _sync_tasks()
 
     if with_podcast:
         run_podcast_pass(podcast_days, podcast_max)
@@ -1779,6 +1817,7 @@ def run_weekly(skip_prompt_regen: bool = False, with_podcast: bool = False,
 
     print("\n  Syncing calendar...")
     _sync_calendar()
+    _sync_tasks()
 
     print("\n  Refreshing participation tracker...")
     try:
@@ -1841,6 +1880,11 @@ def main():
     group.add_argument("--podcasts-only", action="store_true",
                        help="Skip the sync; just generate missing podcasts in the window "
                             "(what the Mac mirror job runs when the cloud could not)")
+    group.add_argument("--tasks-only", action="store_true",
+                       help="Skip the sync; just push deliverables to Todoist and write the "
+                            ".ics feed (with --dry-run: show what would change)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="With --tasks-only: print the Todoist changes without making them")
     parser.add_argument("--skip-prompt-regen", action="store_true",
                         help="Don't regenerate notes just because the master prompt changed "
                              "(useful after minor prompt tweaks)")
@@ -1886,6 +1930,11 @@ def main():
 
     if args.podcasts_only:
         run_podcast_pass(args.podcast_days, args.podcast_max)
+    elif args.tasks_only:
+        _sync_tasks(dry_run=args.dry_run)
+        if not args.dry_run:
+            print("\n  Syncing calendar...")
+            _sync_calendar()
     elif args.daily:
         run_daily(skip_prompt_regen=args.skip_prompt_regen, with_podcast=args.with_podcast,
                   podcast_days=args.podcast_days, podcast_max=args.podcast_max)

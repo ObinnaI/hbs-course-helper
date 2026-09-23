@@ -26,7 +26,9 @@ os.environ["COURSEWORK_ROOT"]    = str(_TMP / "coursework")
 os.environ["CANVAS_CONFIG_FILE"] = str(_TMP / "canvas_config.json")
 for _key in ("CANVAS_API_TOKEN", "CANVAS_BASE_URL", "CANVAS_API_URL",
              "ANTHROPIC_API_KEY", "COURSEWORK_TRASH", "CALENDAR_BACKEND",
-             "CANVAS_NO_CREATE_FOLDERS", "NOTES_BACKEND", "NOTES_MODEL"):
+             "CANVAS_NO_CREATE_FOLDERS", "NOTES_BACKEND", "NOTES_MODEL",
+             "TASKS_BACKEND", "TODOIST_API_TOKEN", "TODOIST_PROJECT", "TASKS_LLM",
+             "CLASSIFY_MODEL"):
     os.environ.pop(_key, None)
 
 import path_config  # noqa: E402  (must follow the environment setup above)

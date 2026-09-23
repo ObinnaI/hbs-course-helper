@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import path_config
 import canvas_refresh as cr
-from canvas_common import classify_submission
+import deliverables
 
 CAL_NAME      = "Canvas Assignments"
 LOOKBACK_DAYS = 60          # keep recent past deadlines so the calendar isn't rewritten history
@@ -74,44 +74,47 @@ def _utc(iso: str) -> str:
 
 
 def _fingerprint(a: dict) -> str:
-    raw = f"{a.get('due_at')}|{a.get('name')}|{cr.strip_html(a.get('description') or '')}"
+    raw = (f"{a.get('due_at')}|{a.get('name')}|{cr.strip_html(a.get('description') or '')}"
+           f"|{'done' if deliverables.submission_done(a) else 'open'}")
     return hashlib.md5(raw.encode()).hexdigest()[:12]
+
+
+def _start(due_at: str) -> str:
+    """A 23:59 (Boston) deadline is an all-day event on its date; others keep their time."""
+    local = cr.boston_date(due_at)
+    if local.hour == 23 and local.minute == 59:
+        return f"DTSTART;VALUE=DATE:{local.strftime('%Y%m%d')}"
+    return f"DTSTART:{_utc(due_at)}"
 
 
 # ── Events ────────────────────────────────────────────────────────────────────
 
-def build_events(courses: dict, now: "datetime | None" = None) -> list[dict]:
+def build_events(courses: dict, now: "datetime | None" = None, llm: bool = True) -> list[dict]:
     """
-    One event per deliverable (or ambiguous posting, prefixed ⚠) due within
-    the last LOOKBACK_DAYS or any time in the future.
+    One event per deliverable (deliverables.py decides what that is) due within
+    the last LOOKBACK_DAYS or the next year. Class sessions never appear: the
+    school's own calendar feed already has them. A submitted one keeps its
+    event, prefixed ✓, so the history stays on the calendar.
     """
     now = now or datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=LOOKBACK_DAYS)
     events = []
-    for abbrev in sorted(courses):
-        info = courses[abbrev]
-        cid = info.get("canvas_id")
-        if not cid or not path_config.is_active(info, now):
+    for r in deliverables.collect(courses, now, since_days=LOOKBACK_DAYS,
+                                  ahead_days=366, llm=llm):
+        if not deliverables.is_deliverable_kind(r["kind"]):
             continue
-        for a in cr.canvas_get(f"courses/{cid}/assignments", {"per_page": 100}):
-            if not a.get("due_at"):
-                continue
-            due = datetime.fromisoformat(a["due_at"].replace("Z", "+00:00"))
-            if due < cutoff:
-                continue
-            kind = classify_submission(a.get("submission_types"))
-            if kind == "session":
-                continue
-            name = a.get("name", "").strip()
-            events.append({
-                "uid":         f"{cid}-{a.get('id')}@{UID_DOMAIN}",
-                "dtstart":     _utc(a["due_at"]),
-                "summary":     f"{'⚠ ' if kind == 'ambiguous' else ''}{name} ({abbrev})",
-                "description": cr.strip_html(a.get("description") or "")[:800],
-                "url":         a.get("html_url", ""),
-                "fingerprint": _fingerprint(a),
-            })
-    events.sort(key=lambda e: (e["dtstart"], e["uid"]))
+        a, cid, abbrev = r["a"], r["cid"], r["abbrev"]
+        name = a.get("name", "").strip()
+        done = deliverables.submission_done(a)
+        events.append({
+            "uid":         f"{cid}-{a.get('id')}@{UID_DOMAIN}",
+            "dtstart":     _start(a["due_at"]),
+            "sort":        _utc(a["due_at"]),
+            "summary":     f"{'✓ ' if done else 'DUE: '}{name} ({abbrev})",
+            "description": cr.strip_html(a.get("description") or "")[:800],
+            "url":         a.get("html_url", ""),
+            "fingerprint": _fingerprint(a),
+        })
+    events.sort(key=lambda e: (e["sort"], e["uid"]))
     return events
 
 
@@ -157,10 +160,11 @@ def render(events: list[dict]) -> str:
             f"DTSTAMP:{e['dtstamp']}",
             f"LAST-MODIFIED:{e['dtstamp']}",
             f"SEQUENCE:{e['seq']}",
-            f"DTSTART:{e['dtstart']}",
-            f"DURATION:{EVENT_LENGTH}",
-            f"SUMMARY:{_esc(e['summary'])}",
+            e["dtstart"],
         ]
+        if not e["dtstart"].startswith("DTSTART;VALUE=DATE"):
+            lines.append(f"DURATION:{EVENT_LENGTH}")
+        lines.append(f"SUMMARY:{_esc(e['summary'])}")
         if e["description"]:
             lines.append(f"DESCRIPTION:{_esc(e['description'])}")
         if e["url"]:
