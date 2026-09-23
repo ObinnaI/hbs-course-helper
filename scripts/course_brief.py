@@ -582,7 +582,7 @@ def _next_posting(session: dict, date_str: str) -> "dict | None":
         for a in cr.canvas_get(f"courses/{session['course_id']}/assignments", {"per_page": 100}):
             if not a.get("due_at"):
                 continue
-            if canvas_common.classify_submission(a.get("submission_types")) not in cr.SESSION_KINDS:
+            if not cr._kind_matches(cr.posting_kind(a), cr.SESSION_KINDS):
                 continue
             ds = cr.yymmdd(cr.boston_date(a["due_at"]))
             if ds > date_str:

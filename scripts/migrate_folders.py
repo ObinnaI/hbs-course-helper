@@ -83,7 +83,7 @@ def postings_for(cr, cc, course_id: int) -> list:
     for a in cr.canvas_get(f"courses/{course_id}/assignments", {"per_page": 100}):
         if not a.get("due_at"):
             continue
-        if cc.classify_submission(a.get("submission_types")) not in cr.SESSION_KINDS:
+        if not cr._kind_matches(cr.posting_kind(a), cr.SESSION_KINDS):
             continue
         out.append((cc.class_number(a.get("name", "")), cr.yymmdd(cr.boston_date(a["due_at"])), a))
     return out

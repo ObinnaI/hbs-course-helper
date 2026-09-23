@@ -20,7 +20,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 import path_config
 import canvas_refresh as cr
 import canvas_common
-from canvas_common import classify_submission as _classify
 
 _paths    = path_config.resolve()
 DEST_ROOT = _paths["coursework_root"]
@@ -109,18 +108,20 @@ def generate(week_start: datetime | None = None) -> Path:
                 continue
 
             sub  = a.get("submission_types") or []
-            kind = _classify(sub)
+            kind = cr.posting_kind(a)          # both → shown on both lists
             name = a["name"]
             day  = dt.date()
 
-            if kind == "session":
+            if kind == "skip":
+                continue
+            if kind in ("session", "both"):
                 date_str    = dt.strftime("%y%m%d")
                 session_dir = canvas_common.find_session_dir(info["folder_path"], date_str)
                 pages       = _count_pages(session_dir)
                 by_day[day]["sessions"].append((dt, abbrev, _short_name(name, abbrev), pages))
-            elif kind == "deliverable":
+            if kind in ("deliverable", "both"):
                 by_day[day]["deliverables"].append((dt, abbrev, name, _sub_label(sub)))
-            else:
+            if kind == "ambiguous":
                 by_day[day]["ambiguous"].append((dt, abbrev, name, sub))
 
     # ── Build markdown, Monday → Friday ───────────────────────────────────────

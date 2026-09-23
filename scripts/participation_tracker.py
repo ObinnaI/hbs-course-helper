@@ -34,7 +34,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import path_config
 import canvas_common
-from canvas_common import classify_submission
 
 _paths       = path_config.resolve()
 DEST_ROOT    = _paths["coursework_root"]
@@ -136,7 +135,7 @@ def get_all_sessions(order: list[str]) -> dict[str, list[dict]]:
         assignments = cr.canvas_get(f"courses/{course_id}/assignments", {"per_page": 100})
         sessions = [a for a in assignments
                     if a.get("due_at")
-                    and classify_submission(a.get("submission_types")) != "deliverable"]
+                    and cr._kind_matches(cr.posting_kind(a), cr.SESSION_KINDS)]
         sessions.sort(key=lambda a: a["due_at"])
         result[abbrev] = sessions
     return result
