@@ -83,6 +83,34 @@ def cheat_sheet_text(session_dir: Path, date_str: str, abbrev: str,
     return text if text.strip() else None
 
 
+def source_fingerprint(reading_files: list, sheet: "str | None", assignments: list) -> str:
+    """
+    What the episode is built from: the readings' names and bytes, the cheat
+    sheet text, the postings. A notebook carries this in its title, so a
+    later run with different sources renders a new episode instead of
+    collecting the old audio.
+    """
+    import hashlib
+    h = hashlib.md5()
+    for f in sorted(reading_files, key=lambda f: f.name):
+        h.update(f.name.encode()); h.update(_cc.file_md5(f).encode())
+    h.update((sheet or "").encode("utf-8", "replace"))
+    for a in assignments:
+        h.update(str(a.get("id")).encode()); h.update((a.get("description") or "").encode("utf-8", "replace"))
+    return h.hexdigest()[:10]
+
+
+def notebook_title(session_label: str, fingerprint: str) -> str:
+    return f"{session_label} · {fingerprint}"
+
+
+def is_stale_notebook(title: str, session_label: str, current_title: str) -> bool:
+    """An earlier notebook for the same class day built from other sources."""
+    if title == current_title:
+        return False
+    return title == session_label or title.startswith(f"{session_label} · ")
+
+
 def _build_instructions(reading_files: list, abbrev: str) -> str:
     """Load podcast prompt from file, append course-specific notes if present."""
     # The "supplemental" prompt adds a frameworks section when there is more
@@ -180,13 +208,23 @@ async def _generate(date_str: str, abbrev: str):
     # ── NotebookLM ─────────────────────────────────────────────────────────────
     async with NotebookLMClient.from_storage() as client:
 
-        # Find or create notebook
+        # Find or create the notebook for THESE sources. A notebook made from
+        # other sources (a case that arrived later) is stale: its finished
+        # audio must not be collected as if it were this episode.
+        title = notebook_title(session_label, source_fingerprint(reading_files, sheet, assignments))
         notebooks = await client.notebooks.list()
-        nb = next((n for n in notebooks if n.title == session_label), None)
+        nb = next((n for n in notebooks if n.title == title), None)
+        for old in notebooks:
+            if is_stale_notebook(old.title, session_label, title):
+                try:
+                    await client.notebooks.delete(old.id)
+                    print(f"Removed stale notebook: {old.title}")
+                except Exception as e:
+                    print(f"  (could not remove stale notebook {old.title}: {e})")
         if nb:
             print(f"Reusing notebook: {nb.title}")
         else:
-            nb = await client.notebooks.create(session_label)
+            nb = await client.notebooks.create(title)
             print(f"Created notebook:  {nb.title}")
 
         # Upload sources only if notebook is empty (avoids re-uploading on retry)

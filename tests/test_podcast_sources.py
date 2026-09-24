@@ -42,3 +42,23 @@ def test_instructions_tell_hosts_to_separate_case_from_cheat_sheet(tmp_path):
     assert "[CLASS-SPECIFIC NOTES]" not in text
     with_supp = pg._build_instructions([tmp_path / "case.pdf", tmp_path / "note.pdf"], "MP")
     assert "Frameworks" in with_supp
+
+
+def test_source_fingerprint_changes_with_sources(tmp_path):
+    case = tmp_path / "Case.pdf"; case.write_bytes(b"%PDF one")
+    posts = [{"id": 1, "description": "<p>q</p>"}]
+    a = pg.source_fingerprint([], "sheet", posts)
+    b = pg.source_fingerprint([case], "sheet", posts)
+    c = pg.source_fingerprint([case], "sheet v2", posts)
+    assert len({a, b, c}) == 3 and len(a) == 10
+    assert pg.source_fingerprint([case], "sheet", posts) == b          # stable
+
+
+def test_stale_notebook_detection():
+    cur = pg.notebook_title("260924 MP", "abc123")
+    assert cur == "260924 MP · abc123"
+    assert pg.is_stale_notebook("260924 MP", "260924 MP", cur)             # legacy title
+    assert pg.is_stale_notebook("260924 MP · 0ldf1ng", "260924 MP", cur)   # other sources
+    assert not pg.is_stale_notebook(cur, "260924 MP", cur)
+    assert not pg.is_stale_notebook("260925 MP · abc123", "260924 MP", cur)
+    assert not pg.is_stale_notebook("260924 MPX · abc123", "260924 MP", cur)
