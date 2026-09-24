@@ -20,6 +20,14 @@
     <key>StartInterval</key>
     <integer>1800</integer>
 
+    <!-- Belt and braces: StartInterval ticks were skipped across lid-closed
+         sleeps and not made up on wake. A missed calendar tick is run at wake. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Minute</key><integer>5</integer></dict>
+        <dict><key>Minute</key><integer>35</integer></dict>
+    </array>
+
     <key>RunAtLoad</key>
     <true/>
 
