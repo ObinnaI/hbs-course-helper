@@ -375,8 +375,8 @@ Everything except two Mac-only pieces (Calendar.app and the NotebookLM browser l
 **Shape**
 
 ```
-ObinnaI/hbs-course-helper   public fork — the code (this repo)
-ObinnaI/hbs-coursework-2026 private — the workflow + every generated file, one repo per academic year
+<you>/hbs-course-helper   public fork — the code (this repo)
+<you>/hbs-coursework-2026 private — the workflow + every generated file, one repo per academic year
 ~/hbs-coursework-2026       clone of the data repo on the Mac (outside iCloud)
 ~/Library/…/HBS/Classes/2026   iCloud folder the mirror job copies into
 ```
@@ -399,14 +399,14 @@ Secrets: `CANVAS_API_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token
 ```bash
 ./.venv/bin/python scripts/path_config.py --discover      # with COURSEWORK_ROOT / CANVAS_CONFIG_FILE pointing at ~/hbs-coursework
 # edit ~/hbs-coursework/claude/canvas_config.json (abbrev_overrides, ignored_courses, folder_name), re-run, then commit and push
-gh -R ObinnaI/hbs-coursework-2026 workflow run refresh.yml -f mode=daily -f podcasts=false
+gh -R <you>/hbs-coursework-2026 workflow run refresh.yml -f mode=daily -f podcasts=false
 ```
 
 **Podcasts** run in the cloud with the stored login. Google expires that cookie every few weeks; when it does the job logs a warning and writes `claude/podcast_status.json`, the Mac mirror job generates the missing episodes with its own login, and you refresh the secret when convenient:
 
 ```bash
 ./.venv/bin/notebooklm login
-gh -R ObinnaI/hbs-coursework-2026 secret set NOTEBOOKLM_AUTH_JSON < ~/.notebooklm/profiles/default/storage_state.json
+gh -R <you>/hbs-coursework-2026 secret set NOTEBOOKLM_AUTH_JSON < ~/.notebooklm/profiles/default/storage_state.json
 ```
 
 **Mac mirror** — `./setup.sh --mirror` installs a launchd job that every 30 minutes (and on login) pushes any ratings you entered in the iCloud trackers and any new file you dropped into a class folder or the materials shelf, pulls, rsyncs the clone into `MIRROR_DEST` without deleting anything, and runs the podcast fallback. Log: `~/Library/Logs/hbs-mirror.log`. If it reports `Operation not permitted` on the iCloud path, grant Full Disk Access to `/bin/bash` in System Settings → Privacy & Security.

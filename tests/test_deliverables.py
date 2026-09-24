@@ -123,10 +123,10 @@ def test_collect_windows_and_includes_submission(state_dir, monkeypatch):
     def fake_get(path, params=None):
         seen.append((path, params)); return posts
     monkeypatch.setattr(cr, "canvas_get", fake_get)
-    courses = {"NEG": {"canvas_id": 17057, "term_end": None},
+    courses = {"NEG": {"canvas_id": 40001, "term_end": None},
                "OLD": {"canvas_id": 1, "term_end": "2025-12-15T00:00:00Z"}}
     rows = dv.collect(courses, now=now, llm=False)
-    assert seen == [("courses/17057/assignments", {"per_page": 100, "include[]": "submission"})]
+    assert seen == [("courses/40001/assignments", {"per_page": 100, "include[]": "submission"})]
     assert [r["a"]["id"] for r in rows] == [3]           # poll too old, final too far, office undated
     assert rows[0]["kind"] == "deliverable" and not dv.submission_done(rows[0]["a"])
     assert dv.submission_done(posts[1])
