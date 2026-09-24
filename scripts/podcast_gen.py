@@ -76,9 +76,9 @@ def cheat_sheet_text(session_dir: Path, date_str: str, abbrev: str,
     existing = np.existing
     if existing is None:
         return None
-    twin = existing.with_suffix(".md")
-    if twin.exists():
-        return twin.read_text(errors="replace")
+    for twin in (existing.parent / f".{existing.stem}.md", existing.with_suffix(".md")):
+        if twin.exists():
+            return twin.read_text(errors="replace")
     text = ai_config.extract_text(existing)
     return text if text.strip() else None
 

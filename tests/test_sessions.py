@@ -254,3 +254,26 @@ def test_sync_tasks_gating(monkeypatch, capsys):
     monkeypatch.setattr(todoist_sync, "run", boom)
     cr._sync_tasks()
     assert "Task sync failed: kaboom" in capsys.readouterr().out
+
+
+def test_visible_md_twins_are_hidden(tmp_path):
+    d = tmp_path / "Fall" / "MP" / "260924 Class 7 - MFS"; d.mkdir(parents=True)
+    (d / "Cheat Sheet - MFS.docx").write_bytes(b"PK")
+    (d / "Cheat Sheet - MFS.md").write_text("# twin")
+    (d / "Course Brief.md").write_text("keep")                  # not a cheat sheet
+    other = tmp_path / "Fall" / "MP" / "260925 Class 8 - Yard"; other.mkdir()
+    (other / "Cheat Sheet - Yard.md").write_text("user's own, no docx")
+    assert cr.hide_notes_twins(tmp_path) == 1
+    assert (d / ".Cheat Sheet - MFS.md").read_text() == "# twin"
+    assert not (d / "Cheat Sheet - MFS.md").exists()
+    assert (other / "Cheat Sheet - Yard.md").exists()            # no Word file: left alone
+    assert cr.hide_notes_twins(tmp_path) == 0
+
+
+def test_daily_horizon_setting(monkeypatch):
+    monkeypatch.delenv("DAILY_HORIZON_DAYS", raising=False)
+    assert cr.daily_horizon_days() == 3
+    monkeypatch.setenv("DAILY_HORIZON_DAYS", "5")
+    assert cr.daily_horizon_days() == 5
+    monkeypatch.setenv("DAILY_HORIZON_DAYS", "junk")
+    assert cr.daily_horizon_days() == 3

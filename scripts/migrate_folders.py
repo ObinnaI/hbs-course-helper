@@ -225,8 +225,8 @@ def write_md_twin(docx: "Path | None") -> None:
     """
     if docx is None or docx.suffix.lower() != ".docx":
         return
-    twin = docx.with_suffix(".md")
-    if twin.exists():
+    twin = docx.parent / f".{docx.stem}.md"
+    if twin.exists() or docx.with_suffix(".md").exists():
         return
     import ai_config
     text = ai_config.extract_text(docx)

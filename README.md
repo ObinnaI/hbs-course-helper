@@ -10,7 +10,7 @@ Works with any Canvas LMS instance (Harvard Business School, Stanford GSB, Whart
 
 | Script | Purpose |
 |--------|---------|
-| `canvas_refresh.py --daily` | Sync files + download readings + regenerate stale notes for sessions in the next 2 days. Runs automatically at 5pm via launchd. |
+| `canvas_refresh.py --daily` | Sync files + download readings + regenerate stale notes for sessions in the next 3 days (`DAILY_HORIZON_DAYS`). Runs automatically at 5pm via launchd. |
 | `canvas_refresh.py --weekly` | Full 6-week sync, reading downloads, notes for 2-week window, weekly overview doc, calendar sync, participation tracker refresh. Runs automatically Sunday 8am via launchd. |
 | `canvas_readings.py YYMMDD COURSE` | Download all linked readings for one session (HBSP cases, articles, YouTube stubs). |
 | `canvas_organize.py` | Route files to correct folders (slides to `Slides/`, etc.) and move duplicates to Trash. Runs automatically after every sync. |
@@ -181,6 +181,8 @@ On refresh, existing ratings are preserved (matched by the course name in the co
 **First-time setup:** Create a calendar named exactly `Canvas Assignments` in Apple Calendar (or in iCloud/Google Calendar and let it sync). Then run `calendar_sync.py` once to populate it.
 
 **No Mac? Use the feed instead.** `ics_feed.py` (or `CALENDAR_BACKEND=ics`) writes `canvas.ics` next to `canvas_config.json`: every deliverable as a `DUE: …` event with a stable UID, so a moved due date updates the existing event rather than adding one. Deadlines at 23:59 become all-day events; a submitted one keeps its event with a `✓` prefix. Class sessions are never in it (Canvas's own calendar has those). Host it anywhere a calendar app can fetch a URL — the cloud workflow below publishes it to a secret Gist — and subscribe once in Calendar, Google Calendar (Other calendars → From URL) or CalendarBridge (ICS source → your primary calendar).
+
+**Cheat sheets are Word files.** Each `Cheat Sheet - <Title>.docx` has a hidden Markdown twin (`.Cheat Sheet - <Title>.md`) that the course brief and the podcast read; Finder does not show it, and any visible twin from an earlier version is tucked away on the next run.
 
 **What counts as a deliverable** is decided by `deliverables.py`, not by Canvas's `submission_types` alone: at HBS one course posts class sessions as text entries and another posts real to-dos as `not_graded`. Rules cover almost everything; the few uncertain postings are put to Claude once (cached in `claude/deliverables_state.json`), and `deliverable_overrides` in `canvas_config.json` pins any posting by id: `{"1177030": "deliverable", "1175395": "session"}`. Run `python3 scripts/deliverables.py --classify` to audit. The same decision feeds the cheat-sheet pipeline, so a class posted as a text entry still gets its folder and notes.
 

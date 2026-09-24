@@ -80,6 +80,15 @@ PDF_PAGE_LIMIT = 150  # a genuinely outsized document, not a normal long case
 # adds the episodes that are actually missing.
 PODCAST_HORIZON_DAYS = 7
 
+
+def daily_horizon_days() -> int:
+    """How far ahead the daily run prepares (default 3: today plus three days),
+    so a cheat sheet and its podcast exist well before the morning of class."""
+    try:
+        return max(1, int(cfg("DAILY_HORIZON_DAYS") or 3))
+    except ValueError:
+        return 3
+
 # ── Env / config ──────────────────────────────────────────────────────────────
 
 def load_env() -> dict:
@@ -915,13 +924,34 @@ def _reading_files(session_dir: Path) -> list[Path]:
     )
 
 
+def hide_notes_twins(root: Path) -> int:
+    """
+    Cheat sheets are Word files; their Markdown twin is for the tools and lives
+    as a dotfile. Earlier versions wrote it visibly beside the .docx — tuck
+    those away so a class folder shows one cheat sheet, not two.
+    """
+    n = 0
+    if not root or not root.exists():
+        return 0
+    for md in root.rglob("Cheat Sheet - *.md"):
+        if md.name.startswith(".") or not md.with_suffix(".docx").exists():
+            continue
+        hidden = md.parent / f".{md.name}"
+        if hidden.exists():
+            md.unlink()
+        else:
+            md.rename(hidden)
+        n += 1
+    return n
+
+
 # A posting that links readings (HBSP, Canvas files) or tells you to read a
 # case is not ready for notes until at least one of those files is on disk.
 _READING_HINT_RE = re.compile(
     r"hbsp\.harvard\.edu|instructure\.com/(?:courses/\d+/)?files/\d+"
     r"|\b(?:read|reading|readings|case|cases|chapter|article)\b", re.I)
 SUBSTANTIVE_EXTS = {".pdf", ".docx", ".pptx", ".doc", ".ppt", ".xlsx", ".csv"}
-READINGS_GRACE_HOURS = 24
+READINGS_GRACE_HOURS = 48
 
 
 def readings_expected(assignments) -> bool:
@@ -1667,17 +1697,17 @@ def run_podcast_pass(horizon_days: int = PODCAST_HORIZON_DAYS,
 
 def run_daily(skip_prompt_regen: bool = False, with_podcast: bool = False,
               podcast_days: int = PODCAST_HORIZON_DAYS, podcast_max: int = 0):
-    """Sync files + refresh Notes for sessions in the next 2 calendar days."""
+    """Sync files + refresh Notes for sessions in the next DAILY_HORIZON_DAYS days."""
     now = datetime.now(tz=BOSTON)
     today = now.date()
-    # "next 2 calendar days" = today and tomorrow
-    cutoff_date = today + timedelta(days=2)
+    horizon = daily_horizon_days()
+    cutoff_date = today + timedelta(days=horizon)
 
     print(f"\n{'─'*55}")
     print(f"  DAILY REFRESH — sessions through {cutoff_date}")
     print(f"{'─'*55}")
 
-    sessions = get_upcoming_sessions(horizon_days=2)
+    sessions = get_upcoming_sessions(horizon_days=horizon)
 
     if not sessions:
         print("  No upcoming sessions in the next 2 days.")
@@ -1713,6 +1743,10 @@ def run_daily(skip_prompt_regen: bool = False, with_podcast: bool = False,
 
     print("\n  Looking back for wrap-ups, module items and announcements...")
     sync_post_class_materials()
+
+    hidden = hide_notes_twins(DEST_ROOT)
+    if hidden:
+        print(f"\n  Tucked away {hidden} Markdown twin(s) of cheat sheets.")
 
     print("\n  Organizing folders...")
     canvas_organize.organize_all(verbose=True)
@@ -1798,6 +1832,10 @@ def run_weekly(skip_prompt_regen: bool = False, with_podcast: bool = False,
 
     print("\n  Looking back for wrap-ups, module items and announcements...")
     sync_post_class_materials()
+
+    hidden = hide_notes_twins(DEST_ROOT)
+    if hidden:
+        print(f"\n  Tucked away {hidden} Markdown twin(s) of cheat sheets.")
 
     print("\n  Organizing folders...")
     canvas_organize.organize_all(verbose=True)

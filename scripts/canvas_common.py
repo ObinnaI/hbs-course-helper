@@ -8,7 +8,7 @@ by code paths that should stay free of side effects.
 Also the one place that knows how a class day is named on disk:
 
     <course folder>/<YYMMDD Class N - Title>/
-        Cheat Sheet - <Title>.docx  (+ .md)     ← the notes
+        Cheat Sheet - <Title>.docx              ← the notes (+ a hidden .md twin for the tools)
         YYMMDD ABBREV Podcast.m4a
         .notes_meta.json
         <readings>
@@ -290,7 +290,7 @@ def notes_paths(session_dir: Path, date_str: str, abbrev: str,
                 title: str = "") -> NotesPaths:
     stem = notes_filename(date_str, abbrev, title)
     docx = session_dir / f"{stem}.docx"
-    md   = session_dir / f"{stem}.md"
+    md   = session_dir / f".{stem}.md"       # hidden: the Word file is the cheat sheet you see
     meta = session_dir / ".notes_meta.json"
 
     existing: "Path | None" = None

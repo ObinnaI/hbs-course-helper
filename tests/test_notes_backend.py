@@ -140,7 +140,7 @@ def test_generate_notes_via_claude_code_writes_cheat_sheet(notes_env, fake_claud
     cr.generate_notes(_session(d))
 
     assert (d / "Cheat Sheet - Pave (A).docx").exists()
-    md = (d / "Cheat Sheet - Pave (A).md").read_text()
+    md = (d / ".Cheat Sheet - Pave (A).md").read_text()
     assert "# Launching Tech Ventures: September 16, 2026" in md
     assert "## Body" in md
     meta = json.loads((d / ".notes_meta.json").read_text())
@@ -193,7 +193,7 @@ def test_api_backend_still_selectable(notes_env, monkeypatch):
     d = notes_env
     cr.generate_notes(_session(d))
     assert calls == {"n": 1}
-    assert (d / "Cheat Sheet - Pave (A).md").read_text().endswith("# api notes\n")
+    assert (d / ".Cheat Sheet - Pave (A).md").read_text().endswith("# api notes\n")
 
 
 def test_failure_message_carries_subtype_and_exit_code(fake_claude, monkeypatch):
@@ -241,14 +241,14 @@ def test_notes_deferred_until_readings_arrive(notes_env, capsys):
     (d / "Massachusetts Financial Services.pdf").write_bytes(b"%PDF-1.4 fake")
     cr.generate_notes(_case_session(d, 72))
     assert (d / "Cheat Sheet - MFS.docx").exists()
-    assert "Generated without the readings" not in (d / "Cheat Sheet - MFS.md").read_text()
+    assert "Generated without the readings" not in (d / ".Cheat Sheet - MFS.md").read_text()
 
 
 def test_notes_generated_with_banner_close_to_class(notes_env, capsys):
     d = notes_env.parent / "260924 Class 7 - MFS"; d.mkdir()
     cr.generate_notes(_case_session(d, 10))
     assert "generating from the posting alone" in capsys.readouterr().out
-    md = (d / "Cheat Sheet - MFS.md").read_text()
+    md = (d / ".Cheat Sheet - MFS.md").read_text()
     assert "Generated without the readings" in md and "## Body" in md
 
 

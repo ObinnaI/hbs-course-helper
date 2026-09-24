@@ -87,7 +87,7 @@ def test_notes_paths_discovery_order(tmp_path):
     d = tmp_path / "260916 Class 5 - Pave"; d.mkdir()
     np = cc.notes_paths(d, "260916", "MP", "Pave (A)")
     assert np.docx == d / "Cheat Sheet - Pave (A).docx"
-    assert np.md == d / "Cheat Sheet - Pave (A).md"
+    assert np.md == d / ".Cheat Sheet - Pave (A).md"
     assert np.existing is None
 
     hand = d / "Cheat Sheet - Six Challenges.docx"; hand.write_bytes(b"PK")

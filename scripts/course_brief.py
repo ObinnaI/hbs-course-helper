@@ -275,8 +275,10 @@ def _session_dirs(course_folder: Path) -> list:
 
 def _notes_md(session_dir: Path) -> "Path | None":
     """The Markdown twin of the notes, or a .md cheat sheet the user made."""
-    for f in sorted(session_dir.glob("*.md")):
-        if canvas_common.is_notes_file(f.name):
+    if not session_dir.exists():
+        return None
+    for f in sorted(session_dir.iterdir()):       # includes the hidden ".Cheat Sheet - X.md" twin
+        if f.is_file() and f.suffix.lower() == ".md" and canvas_common.is_notes_file(f.name):
             return f
     return None
 
