@@ -32,6 +32,7 @@ MEMO = _p(12, "Module Reflection Memo: Module I - Incentive Systems", ["online_t
 ODD = _p(13, "Odd posting", ["discussion_topic"])
 GUEST = _p(14, "Class 4: Management Analyst Meeting", ["none"])
 TBD = _p(15, "TBD", ["online_text_entry"])
+PARTY = _p(16, "Class Party 10/15", ["none"], None, desc="")
 
 
 @pytest.mark.parametrize("posting, expected", [
@@ -39,7 +40,7 @@ TBD = _p(15, "TBD", ["online_text_entry"])
     (MP_POLL, "deliverable"), (INVS_DUE, "deliverable"), (MIDTERM, "both"),
     (FINAL, "deliverable"), (OFFICE, "skip"), (LTV, "session"),
     (NEG_QUIZ_DAY, "session"), (PASSPORT, "deliverable"), (MEMO, "deliverable"),
-    (GUEST, "session"), (ODD, "ambiguous"), (TBD, "session"),
+    (GUEST, "session"), (ODD, "ambiguous"), (TBD, "session"), (PARTY, "deliverable"),
 ])
 def test_rule_table(posting, expected):
     kind, reason = dv.classify_posting(posting)

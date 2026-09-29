@@ -42,7 +42,7 @@ DONE_STATES = {"submitted", "pending_review", "graded", "complete"}
 _TODO_RE = re.compile(
     r"\b(due|submit|submission|upload|turn in|hand in|poll|quiz|survey|questionnaire|"
     r"reflection|memo|essay|paper|project|presentation|sign|waiver|homework|"
-    r"write-?up|deliverable|action items?)\b", re.I)
+    r"write-?up|deliverable|action items?|rsvp|class party|social)\b", re.I)
 _ASSIGNMENT_RE = re.compile(r"\bassignments?\b", re.I)
 _SESSION_HINT_RE = re.compile(
     r"\b(materials|case:|readings?|discussion questions|assignment questions|"

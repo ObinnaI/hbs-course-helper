@@ -227,8 +227,10 @@ def test_readings_expected_and_missing(notes_env):
     assert cr.readings_missing(s, d)
     (d / "Massachusetts Financial Services.pdf").write_bytes(b"%PDF")
     assert cr.readings_missing(s, d) is None
-    guest = _case_session(d, 72, desc="<p>Guest speaker: bring questions.</p>")
+    guest = _case_session(d, 72, desc="<p>Guest speaker: bring questions. No preparation needed.</p>")
     assert not cr.readings_expected(guest["assignments"])
+    empty = _case_session(d, 72, desc="")                 # materials still to come
+    assert cr.readings_expected(empty["assignments"])
 
 
 def test_notes_deferred_until_readings_arrive(notes_env, capsys):

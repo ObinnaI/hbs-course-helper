@@ -955,8 +955,16 @@ READINGS_GRACE_HOURS = 48
 
 
 def readings_expected(assignments) -> bool:
-    """True when a posting points at readings or says to read something."""
-    return any(_READING_HINT_RE.search(a.get("description") or "") for a in assignments)
+    """
+    True when a posting points at readings or says to read something — or says
+    nothing at all yet (an empty posting means the materials are still coming,
+    by email or a later edit; a cheat sheet built from a title alone is noise).
+    """
+    if not assignments:
+        return False
+    return any(_READING_HINT_RE.search(a.get("description") or "")
+               or len(strip_html(a.get("description") or "")) < 40
+               for a in assignments)
 
 
 def substantive_readings(files) -> list:
