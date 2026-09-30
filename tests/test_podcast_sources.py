@@ -62,3 +62,36 @@ def test_stale_notebook_detection():
     assert not pg.is_stale_notebook(cur, "260924 MP", cur)
     assert not pg.is_stale_notebook("260925 MP · abc123", "260924 MP", cur)
     assert not pg.is_stale_notebook("260924 MPX · abc123", "260924 MP", cur)
+
+
+def test_collect_and_record_sources(tmp_path, monkeypatch):
+    d = tmp_path / "260930 Class 5 - Shawspring"; d.mkdir()
+    (d / "Memo.pdf").write_bytes(b"%PDF memo")
+    (d / "Cheat Sheet - Shawspring.docx").write_bytes(b"PK")
+    (d / ".Cheat Sheet - Shawspring.md").write_text("# sheet v1")
+    monkeypatch.setattr(pg._cr, "pdf_page_count", lambda p: 5)
+    files, sheet = pg.collect_sources(d, "260930", "INVS", [])
+    assert [f.name for f in files] == ["Memo.pdf"] and sheet == "# sheet v1"
+    assert pg.recorded_sources(d) is None
+    fp = pg.source_fingerprint(files, sheet, [])
+    pg.record_sources(d, fp)
+    assert pg.recorded_sources(d) == fp
+
+
+def test_podcast_stale_when_a_reading_arrives(tmp_path, monkeypatch):
+    import canvas_refresh as cr
+    d = tmp_path / "260930 Class 5 - Shawspring"; d.mkdir()
+    (d / "Memo.pdf").write_bytes(b"%PDF memo")
+    (d / "260930 INVS Podcast.m4a").write_bytes(b"audio")
+    monkeypatch.setattr(pg._cr, "pdf_page_count", lambda p: 5)
+    monkeypatch.setattr(cr, "_podcast_path", lambda s: d / "260930 INVS Podcast.m4a")
+    monkeypatch.setattr(cr, "_session_is_past", lambda ds: False)
+    s = {"abbrev": "INVS", "date_str": "260930", "assignments": []}
+    assert not cr.podcast_stale(s)                      # nothing recorded: legacy, left alone
+    files, sheet = pg.collect_sources(d, "260930", "INVS", [])
+    pg.record_sources(d, pg.source_fingerprint(files, sheet, []))
+    assert not cr.podcast_stale(s)
+    (d / "2026 Deck.pdf").write_bytes(b"%PDF deck")    # a new reading lands
+    assert cr.podcast_stale(s)
+    monkeypatch.setattr(cr, "_session_is_past", lambda ds: True)
+    assert not cr.podcast_stale(s)                      # past classes are frozen

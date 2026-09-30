@@ -1582,6 +1582,26 @@ def generate_podcast_for_session(session: dict):
                 print(f"    ✗ Podcast generation failed: {e}")
 
 
+def podcast_stale(s: dict) -> bool:
+    """
+    True when the episode exists but was made from other sources (a reading
+    or the cheat sheet changed since). Episodes made before sources were
+    recorded are left alone; so are past classes.
+    """
+    path = _podcast_path(s)
+    if not path.exists() or _session_is_past(s["date_str"]):
+        return False
+    try:
+        import podcast_gen as _pg
+    except ImportError:
+        return False
+    recorded = _pg.recorded_sources(path.parent)
+    if not recorded:
+        return False
+    files, sheet = _pg.collect_sources(path.parent, s["date_str"], s["abbrev"], _session_assignments(s))
+    return _pg.source_fingerprint(files, sheet, _session_assignments(s)) != recorded
+
+
 def _podcast_path(s: dict) -> Path:
     folder = (_COURSES.get(s["abbrev"], {}).get("folder_path") or DEST_ROOT / s["abbrev"])
     session_dir = canvas_common.session_dir_for(folder, s["date_str"], s["abbrev"],
@@ -1658,6 +1678,11 @@ def run_podcast_pass(horizon_days: int = PODCAST_HORIZON_DAYS,
     max_per_run caps one run (a CI job has a time limit); the rest wait.
     """
     sessions = get_upcoming_sessions(horizon_days=horizon_days)
+    stale = [s for s in sessions if podcast_stale(s)]
+    for s in stale:
+        old = _podcast_path(s)
+        print(f"  ↻ {s['abbrev']} {s['date_str']}: readings or cheat sheet changed since the episode was made — rebuilding")
+        old.unlink()
     pending = [s for s in sessions if not _podcast_path(s).exists()]
 
     print(f"\n{'─'*55}")

@@ -152,7 +152,7 @@ async def _generate(date_str: str, abbrev: str):
     session_dir = _cc.find_session_dir(course_folder, date_str)
     if session_dir is not None and _cc.podcast_path(session_dir, date_str, abbrev).exists():
         print(f"Already exists: {_cc.podcast_path(session_dir, date_str, abbrev)}")
-        return
+        return   # the scheduled run removes a stale episode before calling this
 
     course_id = COURSE_IDS[abbrev]
     print("Fetching Canvas assignment...", end=" ", flush=True)
@@ -164,7 +164,26 @@ async def _generate(date_str: str, abbrev: str):
     podcast_file = _cc.podcast_path(session_dir, date_str, abbrev)
     session_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Reading files ──────────────────────────────────────────────────────────
+    reading_files, sheet = collect_sources(session_dir, date_str, abbrev, assignments)
+
+    print(f"\nPodcast: {abbrev} {date_str}")
+    print(f"Session: {session_dir}")
+    print(f"Readings ({len(reading_files)}):")
+    for f in reading_files:
+        print(f"  • {f.name}")
+    print(f"Cheat sheet: {'yes' if sheet else 'none yet'}")
+
+    if not reading_files and not assignments:
+        sys.exit("No readings and no Canvas assignment — nothing to generate from.")
+
+    fingerprint = source_fingerprint(reading_files, sheet, assignments)
+    await _render(session_label, fingerprint, reading_files, sheet, assignments, abbrev, podcast_file)
+    record_sources(session_dir, fingerprint)
+
+
+def collect_sources(session_dir: Path, date_str: str, abbrev: str,
+                    assignments: list) -> "tuple[list, str | None]":
+    """The readings (deduplicated, page-limited) and cheat-sheet text an episode is built from."""
     reading_files = sorted(
         (f for f in session_dir.iterdir()
          if f.is_file() and f.suffix.lower() in _cr.READING_EXTS
@@ -191,27 +210,39 @@ async def _generate(date_str: str, abbrev: str):
             continue
         seen[digest] = f.name
         usable.append(f)
-    reading_files = usable
-
     sheet = cheat_sheet_text(session_dir, date_str, abbrev, _cc.session_title(assignments))
+    return usable, sheet
 
-    print(f"\nPodcast: {abbrev} {date_str}")
-    print(f"Session: {session_dir}")
-    print(f"Readings ({len(reading_files)}):")
-    for f in reading_files:
-        print(f"  • {f.name}")
-    print(f"Cheat sheet: {'yes' if sheet else 'none yet'}")
 
-    if not reading_files and not assignments:
-        sys.exit("No readings and no Canvas assignment — nothing to generate from.")
+def recorded_sources(session_dir: Path) -> "str | None":
+    """Fingerprint of the sources the existing episode was made from, if known."""
+    import json
+    try:
+        return json.loads((session_dir / ".notes_meta.json").read_text()).get("podcast_sources")
+    except Exception:
+        return None
 
+
+def record_sources(session_dir: Path, fingerprint: str) -> None:
+    import json
+    p = session_dir / ".notes_meta.json"
+    try:
+        meta = json.loads(p.read_text()) if p.exists() else {}
+    except Exception:
+        meta = {}
+    meta["podcast_sources"] = fingerprint
+    p.write_text(json.dumps(meta, indent=2, sort_keys=True))
+
+
+async def _render(session_label, fingerprint, reading_files, sheet, assignments, abbrev, podcast_file):
+    from notebooklm import NotebookLMClient
     # ── NotebookLM ─────────────────────────────────────────────────────────────
     async with NotebookLMClient.from_storage() as client:
 
         # Find or create the notebook for THESE sources. A notebook made from
         # other sources (a case that arrived later) is stale: its finished
         # audio must not be collected as if it were this episode.
-        title = notebook_title(session_label, source_fingerprint(reading_files, sheet, assignments))
+        title = notebook_title(session_label, fingerprint)
         notebooks = await client.notebooks.list()
         nb = next((n for n in notebooks if n.title == title), None)
         for old in notebooks:
