@@ -148,3 +148,14 @@ The mirror job (`./setup.sh --mirror`) should touch `~/.hbs-mirror/last_run` eve
 1. `launchctl print gui/$(id -u)/com.hbs-coursework.mirror` — `runs = 0` means launchd never started it; run `launchctl kickstart -k gui/$(id -u)/com.hbs-coursework.mirror`.
 2. If the log says `Operation not permitted` or `privacy block`, macOS is keeping a bare `/bin/bash` out of iCloud Drive. Grant it Full Disk Access: System Settings → Privacy & Security → Full Disk Access → **+** → ⌘⇧G → `/bin/bash` → Open, then kickstart again.
 3. `./setup.sh --mirror` does the kickstart and these checks for you and prints the fix.
+
+
+## Emailed role materials (Negotiation and role plays)
+
+1. Create a GitHub fine-grained token: github.com → Settings → Developer settings → Fine-grained tokens → Generate new token. Repository access: **Only select repositories** → your data repo. Permissions → Repository permissions → **Contents: Read and write**. Copy it.
+2. Open https://script.google.com → **New project**. Delete the sample code, paste all of `tools/gmail_forwarder.gs`, and name the project "HBS mail forwarder".
+3. Gear icon (**Project Settings**) → **Script properties** → add `GITHUB_TOKEN` (the token) and `REPO` (`yourname/hbs-coursework-2026`).
+4. Back in the editor, choose `checkSetup` in the function dropdown and press **Run**. Approve the permission prompts (Gmail, external requests). The log should say `GitHub says 200 … OK` and list any role emails it would forward.
+5. Choose `installTrigger` and press **Run**. From now on new role emails reach `inbox/` within the hour and are filed into the class folder by the next refresh.
+
+If a course uses a code in its subject lines that is not its abbreviation, add it to `email_codes` in `claude/canvas_config.json`, for example `{"MP": ["MPGTD"]}`.

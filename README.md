@@ -17,6 +17,8 @@ Works with any Canvas LMS instance (Harvard Business School, Stanford GSB, Whart
 | `weekly_overview.py` | Generate `Overview/YYMMDD Overview.docx` — Mon–Fri breakdown of sessions and submissions for the upcoming week. |
 | `calendar_sync.py` | Sync Canvas assignment deadlines to Apple Calendar ("Canvas Assignments"). Idempotent. Mac only. |
 | `ics_feed.py` | Write submission deadlines as a subscribable `canvas.ics` feed (what the cloud run publishes). |
+| `inbox.py` | File emailed class materials (role sheets forwarded by `tools/gmail_forwarder.gs`) into the class folder they belong to. Runs at the start of every refresh. |
+| `calculator.py` | Turn the calculator spec at the end of a negotiation cheat sheet into `Calculator - <Case>.xlsx` (package columns, dropdowns, live scoring against reservation value and target). |
 | `deliverables.py --classify` | Show, for every posting, whether it is a class session or something to hand in — and why. Pin mistakes with `deliverable_overrides`. |
 | `todoist_sync.py` | Push every deliverable into Todoist (project `HBS`, one section per course); closes tasks when Canvas shows a submission. `--dry-run` to preview. |
 | `participation_tracker.py` | Build/refresh `Participation Tracker.xlsx` — all courses side by side with a live spoke/entered rate per course. |
@@ -185,6 +187,18 @@ On refresh, existing ratings are preserved (matched by the course name in the co
 **Cheat sheets are Word files.** Each `Cheat Sheet - <Title>.docx` has a hidden Markdown twin (`.Cheat Sheet - <Title>.md`) that the course brief and the podcast read; Finder does not show it, and any visible twin from an earlier version is tucked away on the next run.
 
 **What counts as a deliverable** is decided by `deliverables.py`, not by Canvas's `submission_types` alone: at HBS one course posts class sessions as text entries and another posts real to-dos as `not_graded`. Rules cover almost everything; the few uncertain postings are put to Claude once (cached in `claude/deliverables_state.json`), and `deliverable_overrides` in `canvas_config.json` pins any posting by id: `{"1177030": "deliverable", "1175395": "session"}`. Run `python3 scripts/deliverables.py --classify` to audit. The same decision feeds the cheat-sheet pipeline, so a class posted as a text entry still gets its folder and notes.
+
+---
+
+## Emailed role materials, negotiation playbooks and the calculator
+
+Some courses send materials by email rather than Canvas: a negotiation's confidential role sheet arrives two or three days before class. `tools/gmail_forwarder.gs` is a Google Apps Script you paste into your own Google account once; every hour it finds emails whose subject contains "CONFIDENTIAL ROLE INFORMATION" and writes the attachments plus a `message.json` into `inbox/` of the data repo. Your Gmail login never leaves Google; the script holds a GitHub token limited to that repo. At the start of each refresh `inbox.py` works out the course from the code in the subject (`NEG-04`, `MPGTD-00`; extend with `email_codes` in `canvas_config.json`) and the class day from the best title match, files the attachments and any HBSP link into that day's folder, and saves the email text beside them. New readings rebuild the cheat sheet and the podcast.
+
+For Negotiation, `prompts/cheat_sheet_prompt_NEG_refinement.md` turns a negotiation day's cheat sheet into a playbook: my numbers (BATNA, reservation value, target, estimated ZOPA), issues and exchange rates, what I can and cannot flex on, strategy, the opening line and anchor, three equivalent packages, verbatim scripts, a concession plan, questions to ask and a table card. Debrief days keep the case format with quiz-ready definitions. The same pattern works for any course: add `cheat_sheet_prompt_<ABBREV>_refinement.md`.
+
+A negotiation sheet ends with a calculator spec that the pipeline strips out and builds into `Calculator - <Case>.xlsx`: yellow input cells for each term, dropdowns for issues with named options, the role sheet's scoring as live formulas, three package columns, and the distance from reservation value and target in red or green. Formulas are checked against a whitelist and must evaluate, or no workbook is written.
+
+**Podcast length.** NotebookLM has no setting above "long" and sizes an episode to its material. The brief now demands depth explicitly, and an episode under `PODCAST_MIN_MINUTES` (default 30) is rendered once more with a more insistent brief; the longer render is kept.
 
 ---
 

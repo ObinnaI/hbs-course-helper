@@ -416,6 +416,7 @@ def _discover_courses(token: str, base_url: str, cfg: dict) -> "tuple[dict, bool
             **old,
             "canvas_id":  c["id"],
             "full_name":  _clean_course_name(c.get("name", abbrev)),
+            "course_code": c.get("course_code") or old.get("course_code"),
             "term_id":    term.get("id", old.get("term_id")),
             "term_name":  term.get("name", old.get("term_name")),
             "term":       term_overrides.get(cid) or term_folder(term.get("name")) or old.get("term"),
@@ -715,6 +716,7 @@ def resolve(create_folders: "bool | None" = None) -> dict:
             "term":              term,
             "term_name":         entry.get("term_name"),
             "term_end":          _parse_iso(entry.get("term_end")),
+            "course_code":       entry.get("course_code"),
         }
 
     if not courses and not token:

@@ -1743,6 +1743,15 @@ def run_podcast_pass(horizon_days: int = PODCAST_HORIZON_DAYS,
               "its window is collected rather than restarted.")
 
 
+def _route_inbox() -> None:
+    """Emailed materials (role sheets) → their class folders, before notes are judged."""
+    try:
+        import inbox
+        inbox.route_inbox()
+    except Exception as e:
+        print(f"  ⚠ inbox routing failed: {e}")
+
+
 def run_daily(skip_prompt_regen: bool = False, with_podcast: bool = False,
               podcast_days: int = PODCAST_HORIZON_DAYS, podcast_max: int = 0):
     """Sync files + refresh Notes for sessions in the next DAILY_HORIZON_DAYS days."""
@@ -1755,6 +1764,7 @@ def run_daily(skip_prompt_regen: bool = False, with_podcast: bool = False,
     print(f"  DAILY REFRESH — sessions through {cutoff_date}")
     print(f"{'─'*55}")
 
+    _route_inbox()
     sessions = get_upcoming_sessions(horizon_days=horizon)
 
     if not sessions:
@@ -1832,6 +1842,8 @@ def run_weekly(skip_prompt_regen: bool = False, with_podcast: bool = False,
     print(f"\n{'─'*55}")
     print(f"  WEEKLY REFRESH — sync 6 weeks, notes ≤ 2 weeks")
     print(f"{'─'*55}")
+
+    _route_inbox()
 
     # Full file sync for all courses (6-week horizon)
     print("\n  Syncing all course files...")
