@@ -83,7 +83,8 @@ def cheat_sheet_text(session_dir: Path, date_str: str, abbrev: str,
     return text if text.strip() else None
 
 
-def source_fingerprint(reading_files: list, sheet: "str | None", assignments: list) -> str:
+def source_fingerprint(reading_files: list, sheet: "str | None", assignments: list,
+                       instructions: str = "") -> str:
     """
     What the episode is built from: the readings' names and bytes, the cheat
     sheet text, the postings. A notebook carries this in its title, so a
@@ -97,7 +98,34 @@ def source_fingerprint(reading_files: list, sheet: "str | None", assignments: li
     h.update((sheet or "").encode("utf-8", "replace"))
     for a in assignments:
         h.update(str(a.get("id")).encode()); h.update((a.get("description") or "").encode("utf-8", "replace"))
+    h.update((instructions or "").encode("utf-8", "replace"))      # a new brief is a new episode
     return h.hexdigest()[:10]
+
+
+EXPAND_PREAMBLE = (
+    "The previous version of this episode was too short. Make this one substantially longer and "
+    "deeper: at least 40 minutes. Go through every section and every exhibit of the case in order, "
+    "work each discussion question for several minutes with a real counter-argument, derive every "
+    "key number step by step, and rehearse the cheat sheet's suggested lines as dialogue. Do not "
+    "summarise and do not wrap up early.\n\n")
+
+
+def min_minutes() -> float:
+    """Episodes shorter than this are rendered once more (PODCAST_MIN_MINUTES, 0 = never)."""
+    try:
+        return float(_cr.cfg("PODCAST_MIN_MINUTES") or 30)
+    except ValueError:
+        return 30.0
+
+
+def needs_retry(durations_sec: list, floor_min: float) -> bool:
+    """One finished render, shorter than the floor: worth one more attempt."""
+    done = [d for d in durations_sec if d]
+    return bool(floor_min) and len(done) == 1 and done[0] < floor_min * 60
+
+
+def longest(artifacts: list):
+    return max(artifacts, key=lambda a: a.duration_seconds or 0) if artifacts else None
 
 
 def notebook_title(session_label: str, fingerprint: str) -> str:
@@ -176,9 +204,12 @@ async def _generate(date_str: str, abbrev: str):
     if not reading_files and not assignments:
         sys.exit("No readings and no Canvas assignment — nothing to generate from.")
 
-    fingerprint = source_fingerprint(reading_files, sheet, assignments)
-    await _render(session_label, fingerprint, reading_files, sheet, assignments, abbrev, podcast_file)
-    record_sources(session_dir, fingerprint)
+    fingerprint = source_fingerprint(reading_files, sheet, assignments,
+                                     _build_instructions(reading_files, abbrev))
+    minutes = await _render(session_label, fingerprint, reading_files, sheet, assignments,
+                            abbrev, podcast_file, date_str)
+    if podcast_file.exists():
+        record_sources(session_dir, fingerprint, minutes)
 
 
 def collect_sources(session_dir: Path, date_str: str, abbrev: str,
@@ -188,6 +219,7 @@ def collect_sources(session_dir: Path, date_str: str, abbrev: str,
         (f for f in session_dir.iterdir()
          if f.is_file() and f.suffix.lower() in _cr.READING_EXTS
          and not _cc.is_notes_file(f.name)
+         and not _cc.is_generated_file(f.name)
          and f.suffix.lower() != ".m4a"
          # "(skipped)" stubs say a reading was left out — uploading one as a
          # source tells the hosts about a file they cannot see. "~$" files are
@@ -223,7 +255,7 @@ def recorded_sources(session_dir: Path) -> "str | None":
         return None
 
 
-def record_sources(session_dir: Path, fingerprint: str) -> None:
+def record_sources(session_dir: Path, fingerprint: str, minutes: "float | None" = None) -> None:
     import json
     p = session_dir / ".notes_meta.json"
     try:
@@ -231,10 +263,40 @@ def record_sources(session_dir: Path, fingerprint: str) -> None:
     except Exception:
         meta = {}
     meta["podcast_sources"] = fingerprint
+    if minutes:
+        meta["podcast_minutes"] = round(minutes, 1)
     p.write_text(json.dumps(meta, indent=2, sort_keys=True))
 
 
-async def _render(session_label, fingerprint, reading_files, sheet, assignments, abbrev, podcast_file):
+async def _render_once(client, nb, instructions, audio_format, audio_length, date_str, abbrev) -> bool:
+    """Queue one audio render and wait for it. False when it outran the wait."""
+    status = await client.artifacts.generate_audio(
+        nb.id, instructions=instructions, audio_format=audio_format, audio_length=audio_length)
+    print(f"  Task: {status.task_id}")
+    try:
+        await client.artifacts.wait_for_completion(
+            nb.id, status.task_id,
+            # A six-source notebook regularly runs past 20 minutes. The old
+            # ceiling abandoned finished work and reported failure.
+            timeout=2700.0, on_status_change=lambda s: print(f"  → {s.status}"))
+    except ArtifactInProgressTimeoutError:
+        print(f"\n  Still rendering after 45 min. NotebookLM keeps going without us — re-run "
+              f"this command later and it will download the finished audio:")
+        print(f"    ./.venv/bin/python scripts/podcast_gen.py {date_str} {abbrev}")
+        return False
+    return True
+
+
+async def _finished_audio(client, nb) -> list:
+    try:
+        return [a for a in await client.artifacts.list_audio(nb.id) if a.is_completed]
+    except Exception as e:
+        print(f"  (could not list existing audio: {e})")
+        return []
+
+
+async def _render(session_label, fingerprint, reading_files, sheet, assignments, abbrev,
+                  podcast_file, date_str="") -> "float | None":
     from notebooklm import NotebookLMClient
     # ── NotebookLM ─────────────────────────────────────────────────────────────
     async with NotebookLMClient.from_storage() as client:
@@ -287,17 +349,9 @@ async def _render(session_label, fingerprint, reading_files, sheet, assignments,
         # A render that outran the poll ceiling keeps going on NotebookLM's side.
         # Collect a finished one rather than paying for the same audio twice —
         # without this, every retry queued a second render and waited again.
-        existing_audio = None
-        try:
-            for art in await client.artifacts.list_audio(nb.id):
-                if art.is_completed:
-                    existing_audio = art
-                    break
-        except Exception as e:
-            print(f"  (could not list existing audio: {e})")
-
-        if existing_audio is not None:
-            mins = int((existing_audio.duration_seconds or 0) // 60)
+        done = await _finished_audio(client, nb)
+        if done:
+            mins = int((longest(done).duration_seconds or 0) // 60)
             print(f"\n  Audio from an earlier run has finished ({mins} min) — "
                   f"collecting it instead of generating again.")
         else:
@@ -305,41 +359,43 @@ async def _render(session_label, fingerprint, reading_files, sheet, assignments,
                   f"({audio_length.name.lower()} length; a long one renders 10–30 min)"
                   f"{' [with supplemental frameworks]' if has_supplemental else ''}...",
                   flush=True)
-            status = await client.artifacts.generate_audio(
-                nb.id,
-                instructions=instructions,
-                audio_format=audio_format,
-                audio_length=audio_length,
-            )
-            print(f"  Task: {status.task_id}")
+            if not await _render_once(client, nb, instructions, audio_format, audio_length, date_str, abbrev):
+                return None
+            done = await _finished_audio(client, nb)
 
-            def _on_change(s):
-                print(f"  → {s.status}")
-
-            try:
-                await client.artifacts.wait_for_completion(
-                    nb.id,
-                    status.task_id,
-                    # A six-source notebook regularly runs past 20 minutes. The
-                    # old ceiling abandoned finished work and reported failure.
-                    timeout=2700.0,
-                    on_status_change=_on_change,
-                )
-            except ArtifactInProgressTimeoutError:
-                print(f"\n  Still rendering after 45 min. NotebookLM keeps going "
-                      f"without us — re-run this command later and it will "
-                      f"download the finished audio:")
-                print(f"    ./.venv/bin/python scripts/podcast_gen.py "
-                      f"{date_str} {abbrev}")
-                return
+        # NotebookLM sizes an episode to its material and "long" is only a
+        # hint. One that comes back short gets a single, more insistent retry;
+        # the longer of the two is kept.
+        floor = min_minutes()
+        if needs_retry([a.duration_seconds for a in done], floor):
+            first = (done[0].duration_seconds or 0) / 60
+            print(f"\n  Episode is {first:.0f} min, under the {floor:.0f}-minute floor — rendering once more, longer...",
+                  flush=True)
+            if await _render_once(client, nb, EXPAND_PREAMBLE + instructions, audio_format, audio_length, date_str, abbrev):
+                done = await _finished_audio(client, nb)
+        best = longest(done)
+        if best is None:
+            print("  ✗ No finished audio to download.")
+            return None
+        if len(done) > 1:
+            print("  Renders: " + ", ".join(f"{(a.duration_seconds or 0) / 60:.0f} min" for a in done)
+                  + f" — keeping the {(best.duration_seconds or 0) / 60:.0f}-minute one")
+            for a in done:
+                if a.id != best.id:
+                    try:
+                        await client.artifacts.delete(nb.id, a.id)
+                    except Exception:
+                        pass
 
         # Download
-        print(f"  ↓ Downloading...")
-        await client.artifacts.download_audio(nb.id, str(podcast_file))
+        print(f"  ↓ Downloading ({(best.duration_seconds or 0) / 60:.0f} min)...")
+        await client.artifacts.download_audio(nb.id, str(podcast_file), artifact_id=best.id)
+        minutes = (best.duration_seconds or 0) / 60
 
     shrink_for_speech(podcast_file)
     print(f"\n✅ Saved: {podcast_file}")
     print(f"   Play:  open '{podcast_file}'")
+    return minutes
 
 
 def shrink_for_speech(path: Path) -> None:

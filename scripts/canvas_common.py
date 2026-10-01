@@ -280,6 +280,16 @@ class NotesPaths:
     existing: "Path | None" # the notes this folder already has, whatever they're called
 
 
+def is_generated_file(name: str) -> bool:
+    """
+    Files the pipeline makes for you that are neither notes nor readings — the
+    negotiation calculator workbook. They must never count as a reading (that
+    would re-trigger the notes that produced them) or be sent to NotebookLM.
+    """
+    n = name or ""
+    return n.startswith("Calculator - ") and n.lower().endswith(".xlsx")
+
+
 def notes_filename(date_str: str, abbrev: str, title: str = "") -> str:
     """'Cheat Sheet - Pave (A)' when the day has a title, else '260916 MP Notes'."""
     title = _truncate_words(safe_name(title or ""), 80)

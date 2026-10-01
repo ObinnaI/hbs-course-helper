@@ -918,6 +918,7 @@ def _reading_files(session_dir: Path) -> list[Path]:
         (f for f in session_dir.iterdir()
          if f.is_file() and f.suffix.lower() in READING_EXTS
          and not canvas_common.is_notes_file(f.name)   # a cheat sheet is not a reading
+         and not canvas_common.is_generated_file(f.name)   # nor is the calculator
          and "(skipped)" not in f.name
          and not f.name.startswith("~$")),          # Word lock files
         key=lambda f: (-f.stat().st_size if f.suffix.lower() == ".pdf" else 0, f.name),
@@ -1278,6 +1279,18 @@ def _finish_notes(session: dict, session_dir: Path, output_file: Path, md_file: 
     if skipped:
         metadata["Skipped"] = ", ".join(skipped)
 
+    # A negotiation sheet ends with a calculator spec: take it out of the
+    # document and turn it into a workbook beside the cheat sheet.
+    import calculator
+    result, calc_spec = calculator.extract(result)
+    if calc_spec:
+        calc_file = session_dir / calculator.filename(canvas_common.session_title(assignments))
+        try:
+            calculator.build(calc_spec, calc_file)
+            print(f"    ✅ Calculator: {calc_file.name}")
+        except Exception as e:
+            print(f"    ⚠ Calculator not written ({e})")
+
     title = notes_heading(date_str, abbrev)
     write_markdown(md_file, title, metadata, result)
     markdown_to_docx(md_text=result, output_path=output_file, title=title, metadata=metadata)
@@ -1599,7 +1612,9 @@ def podcast_stale(s: dict) -> bool:
     if not recorded:
         return False
     files, sheet = _pg.collect_sources(path.parent, s["date_str"], s["abbrev"], _session_assignments(s))
-    return _pg.source_fingerprint(files, sheet, _session_assignments(s)) != recorded
+    current = _pg.source_fingerprint(files, sheet, _session_assignments(s),
+                                     _pg._build_instructions(files, s["abbrev"]))
+    return current != recorded
 
 
 def _podcast_path(s: dict) -> Path:

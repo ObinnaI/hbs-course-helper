@@ -311,6 +311,8 @@ def _post_class_files(session_dir: Path) -> list:
             continue
         if canvas_common.is_notes_file(f.name) or f.suffix.lower() == ".m4a":
             continue
+        if canvas_common.is_generated_file(f.name):
+            continue
         if f.name in known or "(skipped)" in f.name:
             continue
         out.append(f)

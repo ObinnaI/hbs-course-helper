@@ -89,9 +89,38 @@ def test_podcast_stale_when_a_reading_arrives(tmp_path, monkeypatch):
     s = {"abbrev": "INVS", "date_str": "260930", "assignments": []}
     assert not cr.podcast_stale(s)                      # nothing recorded: legacy, left alone
     files, sheet = pg.collect_sources(d, "260930", "INVS", [])
-    pg.record_sources(d, pg.source_fingerprint(files, sheet, []))
+    pg.record_sources(d, pg.source_fingerprint(files, sheet, [], pg._build_instructions(files, "INVS")), 34.2)
     assert not cr.podcast_stale(s)
+    import json
+    assert json.loads((d / ".notes_meta.json").read_text())["podcast_minutes"] == 34.2
     (d / "2026 Deck.pdf").write_bytes(b"%PDF deck")    # a new reading lands
     assert cr.podcast_stale(s)
     monkeypatch.setattr(cr, "_session_is_past", lambda ds: True)
     assert not cr.podcast_stale(s)                      # past classes are frozen
+
+
+def test_fingerprint_changes_with_the_brief(tmp_path):
+    assert pg.source_fingerprint([], "sheet", [], "brief one") != pg.source_fingerprint([], "sheet", [], "brief two")
+
+
+def test_short_episode_gets_exactly_one_retry(monkeypatch):
+    assert pg.needs_retry([20 * 60], 30)             # one short render
+    assert not pg.needs_retry([34 * 60], 30)          # long enough
+    assert not pg.needs_retry([20 * 60, 26 * 60], 30) # already retried once
+    assert not pg.needs_retry([20 * 60], 0)           # floor switched off
+    assert not pg.needs_retry([None], 30)
+
+    class A:
+        def __init__(self, i, d): self.id, self.duration_seconds = i, d
+    assert pg.longest([A("a", 1200), A("b", 1560)]).id == "b"
+    assert pg.longest([]) is None
+    monkeypatch.setattr(pg._cr, "cfg", lambda k: "45" if k == "PODCAST_MIN_MINUTES" else "")
+    assert pg.min_minutes() == 45
+    monkeypatch.setattr(pg._cr, "cfg", lambda k: "junk" if k == "PODCAST_MIN_MINUTES" else "")
+    assert pg.min_minutes() == 30
+
+
+def test_long_brief_demands_depth():
+    text = pg._build_instructions([], "MP")
+    assert "never under 30" in text and "Pacing:" in text
+    assert "rehearsal for the table" in pg._build_instructions([], "NEG")
