@@ -158,4 +158,6 @@ The mirror job (`./setup.sh --mirror`) should touch `~/.hbs-mirror/last_run` eve
 4. Back in the editor, choose `checkSetup` in the function dropdown and press **Run**. Approve the permission prompts (Gmail, external requests). The log should say `GitHub says 200 … OK` and list any role emails it would forward.
 5. Choose `installTrigger` and press **Run**. From now on new role emails reach `inbox/` within the hour and are filed into the class folder by the next refresh.
 
+**Claude usage.** The hourly forwarder never calls Claude: it runs inside Google and only copies role emails into `inbox/`. Cheat sheets and podcasts are still made by the scheduled refresh alone. The only added usage is the intended one: when a role email arrives, that night's run rebuilds that one class's cheat sheet (and podcast) with the role in it, roughly one extra sheet per negotiation. A run never makes more than `NOTES_MAX_PER_RUN` sheets, and anything skipped for a usage limit is picked up the next night.
+
 If a course uses a code in its subject lines that is not its abbreviation, add it to `email_codes` in `claude/canvas_config.json`, for example `{"MP": ["MPGTD"]}`.
