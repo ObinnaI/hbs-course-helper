@@ -55,6 +55,4 @@ A compact pipe table of the 8–15 figures most likely to be asked for, each wit
 
 Quality checks before you finish: every question in the posting is answered; every number has a source or a stated assumption; the 20-second answers are genuinely different from each other and could be spoken aloud; nothing is generic that could have been written without reading the case.
 
-Class-specific notes follow. Where they define a different section structure for a kind of session (for example a live negotiation), that structure replaces the section list above; the output rules and quality checks still apply.
-
 [CLASS-SPECIFIC NOTES]
