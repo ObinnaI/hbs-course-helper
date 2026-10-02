@@ -19,6 +19,7 @@ Works with any Canvas LMS instance (Harvard Business School, Stanford GSB, Whart
 | `ics_feed.py` | Write submission deadlines as a subscribable `canvas.ics` feed (what the cloud run publishes). |
 | `inbox.py` | File emailed class materials (role sheets forwarded by `tools/gmail_forwarder.gs`) into the class folder they belong to. Runs at the start of every refresh. |
 | `calculator.py` | Turn the calculator spec at the end of a negotiation cheat sheet into `Calculator - <Case>.xlsx` (package columns, dropdowns, live scoring against reservation value and target). |
+| `quiz.py [COURSE N]` | Build the `Quiz N` folder for a coming quiz: study guide (key terms, slide lists, practice questions), review-and-drill podcast, and the decks, readings and cheat sheets since the previous quiz. Runs automatically the week before a quiz. |
 | `deliverables.py --classify` | Show, for every posting, whether it is a class session or something to hand in — and why. Pin mistakes with `deliverable_overrides`. |
 | `todoist_sync.py` | Push every deliverable into Todoist (project `HBS`, one section per course); closes tasks when Canvas shows a submission. `--dry-run` to preview. |
 | `participation_tracker.py` | Build/refresh `Participation Tracker.xlsx` — all courses side by side with a live spoke/entered rate per course. |
@@ -201,6 +202,16 @@ For Negotiation, `prompts/cheat_sheet_prompt_NEG_refinement.md` turns a negotiat
 A negotiation sheet ends with a calculator spec that the pipeline strips out and builds into `Calculator - <Case>.xlsx`: yellow input cells for each term, dropdowns for issues with named options, the role sheet's scoring as live formulas, three package columns, and the distance from reservation value and target in red or green. Formulas are checked against a whitelist and must evaluate, or no workbook is written.
 
 **Podcast length.** NotebookLM has no setting above "long" and sizes an episode to its material. The brief now demands depth explicitly, and an episode under `PODCAST_MIN_MINUTES` (default 30) is rendered once more with a more insistent brief; the longer render is kept.
+
+---
+
+## Quiz study guides
+
+A quiz is recognised from a class title ("… Debrief + QUIZ 3"; override the pattern per course with `quiz_pattern`). In the week before it, each refresh builds `<Course>/Quiz N/`: a study guide (`<Course> Quiz N Study Guide.docx`), a review-and-drill podcast, one subfolder per case since the previous quiz holding the professor's post-class deck, the readings, role sheets and cheat sheets, and the previous quiz's guide under `Earlier/`.
+
+Scope runs from the previous quiz day (its content was taught after that quiz was taken) to the day before this quiz; earlier classes go to the model as "still fair game", marked tested or untested. Post-class decks are matched to classes by the class-order numbers in their Canvas folder names (`7_8_Moms.com`) and usually arrive days late, so the guide and podcast rebuild whenever the folder's inputs change, until the quiz date. The guide is built for definitional multiple-choice quizzes: an exhaustive key-terms table in the professor's wording, every list on the slides with likely fake items, confusion pairs, named studies, real past questions found on "Quiz answers" slides, and a 25 to 30 question practice quiz. A Quiz folder you made yourself is never written to; its study sheet is read as earlier material (the mirror copies study sheets in `Quiz */` up to the repo for that purpose).
+
+On demand: `python3 scripts/quiz.py NEG 3 --force --podcast`, or the `quiz` input of the workflow's manual run.
 
 ---
 

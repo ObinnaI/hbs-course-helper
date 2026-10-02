@@ -296,7 +296,13 @@ async def _finished_audio(client, nb) -> list:
 
 
 async def _render(session_label, fingerprint, reading_files, sheet, assignments, abbrev,
-                  podcast_file, date_str="") -> "float | None":
+                  podcast_file, date_str="", instructions: "str | None" = None,
+                  extra_texts: "list | None" = None) -> "float | None":
+    """
+    Build (or collect) one episode. `instructions` replaces the class brief and
+    `extra_texts` adds labelled text sources [(title, text)] — the quiz study
+    guide uses both.
+    """
     from notebooklm import NotebookLMClient
     # ── NotebookLM ─────────────────────────────────────────────────────────────
     async with NotebookLMClient.from_storage() as client:
@@ -341,9 +347,12 @@ async def _render(session_label, fingerprint, reading_files, sheet, assignments,
             if sheet:
                 print(f"  + Adding the cheat sheet as a labelled source")
                 await client.sources.add_text(nb.id, CHEAT_SHEET_TITLE, sheet, wait=True)
+            for text_title, text in (extra_texts or []):
+                print(f"  + Adding text source: {text_title}")
+                await client.sources.add_text(nb.id, text_title, text, wait=True)
 
         # Generate
-        instructions = _build_instructions(reading_files, abbrev)
+        instructions = instructions or _build_instructions(reading_files, abbrev)
         has_supplemental = len(reading_files) > 1
         audio_format, audio_length = _audio_options()
         # A render that outran the poll ceiling keeps going on NotebookLM's side.

@@ -73,7 +73,7 @@ Before writing it, check the block against any worked example in the role sheet:
 
 ## B. Debrief day (the posting says "debrief", or a quiz is announced, and there is no new role sheet)
 
-Keep the default structure from the main prompt, with these changes: answer "what will the professor debrief" in place of assigned questions (the principles this exercise was built to teach, the results he is likely to show, the mistakes each role typically makes); add a section **## Quiz-ready definitions** with the ten terms most likely to be tested from the classes since the last quiz, each defined in one sentence in the professor's wording where the slides give it; and add **## What I would do differently** tied to the student's own role from the previous class folder.
+Keep the default structure from the main prompt, with these changes: answer "what will the professor debrief" in place of assigned questions (the principles this exercise was built to teach, the results he is likely to show, the mistakes each role typically makes); when a quiz is announced, add one line under the title pointing to the separate quiz study guide (the "Quiz N" folder in the course folder) instead of repeating definitions here; and add **## What I would do differently** tied to the student's own role from the previous class folder.
 
 ## Professor's habits
 - Quizzes are five definitional multiple-choice questions in the first five minutes, including one "which is NOT" stem.

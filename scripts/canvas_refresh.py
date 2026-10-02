@@ -1743,6 +1743,26 @@ def run_podcast_pass(horizon_days: int = PODCAST_HORIZON_DAYS,
               "its window is collected rather than restarted.")
 
 
+def _quiz_guides() -> None:
+    """Study guides (and their folders) for quizzes in the next week."""
+    try:
+        import quiz
+        quiz.run(with_podcast=False)
+    except Exception as e:
+        print(f"  ⚠ quiz guides failed: {e}")
+
+
+def _quiz_podcasts() -> None:
+    if _PODCAST_AUTH_FAILED:
+        return
+    try:
+        import quiz
+        for abbrev, n in quiz.upcoming(sys.modules[__name__]):
+            quiz.podcast(abbrev, n)
+    except Exception as e:
+        print(f"  ⚠ quiz podcasts failed: {e}")
+
+
 def _route_inbox() -> None:
     """Emailed materials (role sheets) → their class folders, before notes are judged."""
     try:
@@ -1815,6 +1835,7 @@ def run_daily(skip_prompt_regen: bool = False, with_podcast: bool = False,
         print(f"  {trashed} duplicate(s) moved to Trash.")
 
     _update_course_briefs()
+    _quiz_guides()
 
     print("\n  Syncing calendar...")
     _sync_calendar()
@@ -1822,6 +1843,7 @@ def run_daily(skip_prompt_regen: bool = False, with_podcast: bool = False,
 
     if with_podcast:
         run_podcast_pass(podcast_days, podcast_max)
+        _quiz_podcasts()
 
     print(f"\n{'─'*55}")
     print("  Daily refresh complete.")
@@ -1908,6 +1930,7 @@ def run_weekly(skip_prompt_regen: bool = False, with_podcast: bool = False,
         print("  No duplicates found.")
 
     _update_course_briefs()
+    _quiz_guides()
 
     print("\n  Generating weekly overview...")
     ov = weekly_overview.generate()
@@ -1929,6 +1952,7 @@ def run_weekly(skip_prompt_regen: bool = False, with_podcast: bool = False,
     interactive = sys.platform == "darwin" and sys.stdin.isatty()
     if with_podcast and not interactive:
         run_podcast_pass(podcast_days, podcast_max)
+        _quiz_podcasts()
     elif with_podcast:
         import subprocess
         subprocess.run(["open", str(ov)], check=False)

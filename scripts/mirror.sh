@@ -108,6 +108,7 @@ if rsync -a --ignore-existing --prune-empty-dirs --max-size=95m \
         --include '/*/*/[0-9][0-9][0-9][0-9][0-9][0-9] */***' \
         --include '/*/*/Course */***' --include '/*/*/General/***' \
         --include '/*/*/CLAUDE.md' \
+        --include '/*/*/Quiz */' --include '/*/*/Quiz */*[Ss]tud*' --include '/*/*/Quiz */.*[Ss]tud*' \
         --exclude '*' \
         "$DEST/" "$CLONE/" 2>/dev/null; then
     git add -A
