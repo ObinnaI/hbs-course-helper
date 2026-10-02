@@ -268,6 +268,34 @@ def record_sources(session_dir: Path, fingerprint: str, minutes: "float | None" 
     p.write_text(json.dumps(meta, indent=2, sort_keys=True))
 
 
+async def make_flashcards(notebook: str, instructions: str, out_path: Path) -> bool:
+    """
+    Flashcards in an existing notebook (the one an episode was built in), kept
+    there for studying in NotebookLM and saved as HTML beside the podcast.
+    Returns False when the notebook is not there or the cards did not finish.
+    """
+    from notebooklm import NotebookLMClient
+    from notebooklm.types import QuizDifficulty, QuizQuantity
+    async with NotebookLMClient.from_storage() as client:
+        nb = next((n for n in await client.notebooks.list() if n.title == notebook), None)
+        if nb is None:
+            print(f"  – flashcards: notebook '{notebook}' not found")
+            return False
+        done = [a for a in await client.artifacts.list_flashcards(nb.id) if a.is_completed]
+        if not done:
+            print("  Generating flashcards...", flush=True)
+            status = await client.artifacts.generate_flashcards(
+                nb.id, instructions=instructions, quantity=QuizQuantity.MORE, difficulty=QuizDifficulty.MEDIUM)
+            try:
+                await client.artifacts.wait_for_completion(nb.id, status.task_id, timeout=900.0)
+            except ArtifactInProgressTimeoutError:
+                print("  Flashcards are still generating; the next run collects them.")
+                return False
+        await client.artifacts.download_flashcards(nb.id, str(out_path), output_format="html")
+    print(f"  ✅ Flashcards: {out_path.name} (and in the NotebookLM notebook '{notebook}')")
+    return True
+
+
 async def _render_once(client, nb, instructions, audio_format, audio_length, date_str, abbrev) -> bool:
     """Queue one audio render and wait for it. False when it outran the wait."""
     status = await client.artifacts.generate_audio(

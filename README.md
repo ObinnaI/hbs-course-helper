@@ -211,6 +211,8 @@ A quiz is recognised from a class title ("… Debrief + QUIZ 3"; override the pa
 
 Scope runs from the previous quiz day (its content was taught after that quiz was taken) to the day before this quiz; earlier classes go to the model as "still fair game", marked tested or untested. Post-class decks are matched to classes by the class-order numbers in their Canvas folder names (`7_8_Moms.com`) and usually arrive days late, so the guide and podcast rebuild whenever the folder's inputs change, until the quiz date. The guide is built for definitional multiple-choice quizzes: an exhaustive key-terms table in the professor's wording, every list on the slides with likely fake items, confusion pairs, named studies, real past questions found on "Quiz answers" slides, and a 25 to 30 question practice quiz. A Quiz folder you made yourself is never written to; its study sheet is read as earlier material (the mirror copies study sheets in `Quiz */` up to the repo for that purpose).
 
+Alongside the podcast, flashcards are generated in the same NotebookLM notebook (`<ABBREV> Quiz N · <fingerprint>`): one card per key term in the guide, reverse cards for the main terms, and cards for each slide list, named study and exercise number (`prompts/quiz_flashcards_prompt.md`). Study them in NotebookLM, or open the saved copy `Quiz N Flashcards.html` in the Quiz folder. They are remade when the podcast's notebook is rebuilt.
+
 On demand: `python3 scripts/quiz.py NEG 3 --force --podcast`, or the `quiz` input of the workflow's manual run.
 
 ---

@@ -191,3 +191,31 @@ def test_prompt_and_guide_name():
     assert "## Key terms" in p and "## Practice quiz" in p and "[CLASS-SPECIFIC NOTES]" not in p
     assert quiz.guide_name("Negotiation", 3) == "Negotiation Quiz 3 Study Guide"
     assert quiz.guide_name("Immersive Field Course: China: Geopolitics", 1) == "Immersive Field Course Quiz 1 Study Guide"
+
+
+def test_podcast_then_flashcards_once(course, monkeypatch):
+    pg = pytest.importorskip("podcast_gen")
+    monkeypatch.setattr(quiz, "_ask", lambda *a: "# guide\n## Key terms\n")
+    quiz.build("LTV", 3)
+    renders, cards = [], []
+    async def fake_render(label, fp, files, sheet, assignments, abbrev, out, date_str="", instructions=None, extra_texts=None):
+        renders.append((label, [f.name for f in files], extra_texts[0][0], "quizmaster" in instructions))
+        out.write_bytes(b"audio"); return 41.0
+    async def fake_cards(notebook, instructions, out_path):
+        cards.append((notebook, "One card for every term" in instructions)); out_path.write_text("<html>"); return True
+    monkeypatch.setattr(pg, "_render", fake_render)
+    monkeypatch.setattr(pg, "make_flashcards", fake_cards)
+    out = quiz.podcast("LTV", 3)
+    q = course / "Quiz 3"
+    assert out == q / "Quiz 3 Podcast.m4a" and (q / "Quiz 3 Flashcards.html").exists()
+    label, names, text_title, drill = renders[0]
+    assert label == "LTV Quiz 3" and text_title == "STUDY GUIDE" and drill
+    assert "2026_fall_moms_2_04.pdf" in names and "Quantron role.pdf" in names
+    assert cards[0][0].startswith("LTV Quiz 3 · ") and cards[0][1]
+    meta = json.loads((q / ".quiz_meta.json").read_text())
+    assert meta["podcast_minutes"] == 41.0 and meta["flashcards_sources"]
+    quiz.podcast("LTV", 3)                                   # nothing changed: neither is redone
+    assert len(renders) == 1 and len(cards) == 1
+    (q / "Quiz 3 Flashcards.html").unlink()                  # cards missing: only the cards are made
+    quiz.podcast("LTV", 3)
+    assert len(renders) == 1 and len(cards) == 2

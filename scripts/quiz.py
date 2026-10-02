@@ -402,22 +402,36 @@ def podcast(abbrev: str, n: int, force: bool = False) -> "Path | None":
     instructions = re.sub(r"\n*\[CLASS-SPECIFIC NOTES\].*", "", base, flags=re.DOTALL).strip()
     fp = pg.source_fingerprint(files, guide, [], instructions)
     out = qdir / f"Quiz {n} Podcast.m4a"
-    if out.exists() and meta.get("podcast_sources") == fp and not force:
-        return out
-    if out.exists():
-        print(f"  ↻ {abbrev} Quiz {n}: study guide or materials changed — rebuilding the podcast")
-        out.unlink()
-    print(f"\n  [{abbrev} Quiz {n} podcast] {len(files)} file(s) + the study guide")
-    minutes = asyncio.run(pg._render(f"{abbrev} Quiz {n}", fp, files, None, [], abbrev, out, "",
-                                     instructions=instructions, extra_texts=[("STUDY GUIDE", guide)]))
-    if out.exists():
-        meta = _read_meta(qdir)
-        meta["podcast_sources"] = fp
-        if minutes:
-            meta["podcast_minutes"] = round(minutes, 1)
-        _write_meta(qdir, meta)
-        return out
-    return None
+    label = f"{abbrev} Quiz {n}"
+    if not (out.exists() and meta.get("podcast_sources") == fp and not force):
+        if out.exists():
+            print(f"  ↻ {abbrev} Quiz {n}: study guide or materials changed — rebuilding the podcast")
+            out.unlink()
+        print(f"\n  [{abbrev} Quiz {n} podcast] {len(files)} file(s) + the study guide")
+        minutes = asyncio.run(pg._render(label, fp, files, None, [], abbrev, out, "",
+                                         instructions=instructions, extra_texts=[("STUDY GUIDE", guide)]))
+        if out.exists():
+            meta = _read_meta(qdir)
+            meta["podcast_sources"] = fp
+            if minutes:
+                meta["podcast_minutes"] = round(minutes, 1)
+            _write_meta(qdir, meta)
+    if not out.exists():
+        return None
+
+    # Flashcards live in the same NotebookLM notebook as the episode.
+    cards = qdir / f"Quiz {n} Flashcards.html"
+    card_prompt = (path_config.PROMPTS_DIR / "quiz_flashcards_prompt.md").read_text().strip()
+    card_fp = hashlib.md5((fp + card_prompt).encode()).hexdigest()[:10]
+    if force or not cards.exists() or _read_meta(qdir).get("flashcards_sources") != card_fp:
+        try:
+            if asyncio.run(pg.make_flashcards(pg.notebook_title(label, fp), card_prompt, cards)):
+                meta = _read_meta(qdir)
+                meta["flashcards_sources"] = card_fp
+                _write_meta(qdir, meta)
+        except Exception as e:
+            print(f"  ⚠ flashcards failed: {e}")
+    return out
 
 
 def upcoming(cr, horizon_days: int = HORIZON_DAYS) -> list:
