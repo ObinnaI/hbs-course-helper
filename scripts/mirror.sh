@@ -12,8 +12,8 @@
 #   2. git pull --rebase (the Mac's commit wins any conflict), push if ahead.
 #   3. rsync clone → mirror folder. Never deletes, never overwrites a mirror
 #      file that is newer than the clone's copy.
-#   4. If the last cloud run reported a NotebookLM login problem (or hasn't
-#      reported in 36 h) and podcasts are pending, generate them here with the
+#   4. If the last cloud run reported a NotebookLM login problem with podcasts
+#      pending (or hasn't reported in 30 h), generate missing ones here with the
 #      Mac's own login, commit, push, rsync again.
 #
 # The clone lives outside iCloud on purpose: iCloud Drive and a .git directory
@@ -136,21 +136,25 @@ echo "$LOG_PREFIX mirrored $(git rev-parse --short HEAD) → $DEST"
 
 # ── 4. podcast fallback ───────────────────────────────────────────────────────
 STATUS="$CLONE/claude/podcast_status.json"
+# Step in when the cloud says its login failed and episodes are missing, or
+# when it has not written a status for 30 h (a run that skipped the podcast step
+# entirely, or no run at all). The pass skips episodes that exist, so a check
+# with nothing to do costs a few seconds.
 need_podcasts() {
-    [ -f "$STATUS" ] || return 1
+    [ -f "$STATUS" ] || return 0
     "$CODE/.venv/bin/python" - "$STATUS" <<'PY'
 import json, sys, datetime as d
-s = json.load(open(sys.argv[1]))
-if not s.get("pending"): sys.exit(1)
 try:
+    s = json.load(open(sys.argv[1]))
     age = d.datetime.now(d.timezone.utc) - d.datetime.fromisoformat(s["checked_at"])
 except Exception:
     sys.exit(0)
-sys.exit(0 if (not s.get("auth_ok")) or age > d.timedelta(hours=36) else 1)
+if age > d.timedelta(hours=30): sys.exit(0)
+sys.exit(0 if (not s.get("auth_ok")) and s.get("pending") else 1)
 PY
 }
 if [ -x "$CODE/.venv/bin/python" ] && need_podcasts; then
-    echo "$LOG_PREFIX cloud could not make podcasts — generating here"
+    echo "$LOG_PREFIX cloud could not make podcasts (or has not reported) — generating any missing here"
     COURSEWORK_ROOT="$CLONE" \
     CANVAS_CONFIG_FILE="$CLONE/claude/canvas_config.json" \
     CALENDAR_BACKEND=ics \

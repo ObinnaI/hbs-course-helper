@@ -218,3 +218,41 @@ def test_project_created_when_absent(env, monkeypatch):
     ts.run(now=NOW, client=c)
     assert ("POST", "projects") in c.writes()
     assert json.loads(ts.state_file().read_text())["meta"]["project_name"] == "HBS Deadlines"
+
+
+# ── standing alerts ───────────────────────────────────────────────────────────
+
+def test_alert_opens_once_reopens_after_tick_and_closes(env, monkeypatch):
+    monkeypatch.setenv("TASKS_BACKEND", "todoist")
+    c = FakeClient()
+    ts.alert("nlm", True, "Login expired", "fix it", client=c)
+    ts.alert("nlm", True, "Login expired", "fix it", client=c)
+    made = [t for t in c._tasks.values() if t["content"] == "Login expired"]
+    assert len(made) == 1 and made[0]["priority"] == 4 and made[0]["project_id"] == "P1"
+    tid = ts.load_state()["alerts"]["nlm"]
+    c._tasks[tid]["checked"] = True                # ticked off, problem still there
+    ts.alert("nlm", True, "Login expired", "fix it", client=c)
+    tid2 = ts.load_state()["alerts"]["nlm"]
+    assert tid2 != tid and not c._tasks[tid2]["checked"]
+    ts.alert("nlm", False, "Login expired", client=c)
+    assert c._tasks[tid2]["checked"] and "nlm" not in ts.load_state()["alerts"]
+    n = len(c.calls)
+    ts.alert("nlm", False, "Login expired", client=c)  # nothing open: no calls
+    assert len(c.calls) == n
+
+
+def test_alert_needs_todoist_backend(env, monkeypatch):
+    monkeypatch.setenv("TASKS_BACKEND", "none")
+    c = FakeClient()
+    ts.alert("nlm", True, "Login expired", client=c)
+    assert c.calls == []
+
+
+def test_alert_task_is_not_adopted_by_the_deadline_sync(env, monkeypatch):
+    monkeypatch.setenv("TASKS_BACKEND", "todoist")
+    c = FakeClient()
+    ts.alert("nlm", True, "Login expired", "fix it", client=c)
+    ts.run(now=NOW, client=c, llm=False)
+    tid = ts.load_state()["alerts"]["nlm"]
+    assert not c._tasks[tid]["checked"]
+    assert all(v.get("task_id") != tid for v in ts.load_state()["tasks"].values())

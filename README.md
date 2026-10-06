@@ -431,7 +431,7 @@ Secrets: `CANVAS_API_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token
 gh -R <you>/hbs-coursework-2026 workflow run refresh.yml -f mode=daily -f podcasts=false
 ```
 
-**Podcasts** run in the cloud with the stored login. Google expires that cookie every few weeks; when it does the job logs a warning and writes `claude/podcast_status.json`, the Mac mirror job generates the missing episodes with its own login, and you refresh the secret when convenient:
+**Podcasts** run in the cloud with the stored login. Google expires that cookie every few weeks. When it does, the run still lists the missing episodes in `claude/podcast_status.json` (`--podcast-login-failed`), opens a Todoist task "NotebookLM login expired" when `TASKS_BACKEND=todoist` (it closes itself after the next run that signs in), and the Mac mirror job makes the episodes with its own login. The Mac also steps in whenever that file is more than 30 hours old, so a run that never reached the podcast step cannot hide missing episodes. Refresh the secret when convenient:
 
 ```bash
 ./.venv/bin/notebooklm login

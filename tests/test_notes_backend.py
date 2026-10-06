@@ -267,3 +267,35 @@ def test_podcast_pass_waits_for_readings(notes_env, monkeypatch, capsys):
     assert made == ["260916"]
     assert status[-1] == ["260916"]                # the waiting one is not "pending"
     assert "wait for their readings: LTV 260924" in capsys.readouterr().out
+
+
+def test_podcast_pass_records_missing_when_login_failed(notes_env, monkeypatch, capsys):
+    ready = _case_session(notes_env, 72)
+    monkeypatch.setattr(cr, "get_upcoming_sessions", lambda **k: [ready])
+    monkeypatch.setattr(cr, "_PODCAST_AUTH_FAILED", "login check failed before the run")
+    monkeypatch.setattr(cr, "podcast_stale", lambda s: pytest.fail("no episode may be deleted without a login"))
+    monkeypatch.setattr(cr, "generate_podcast_for_session", lambda s: pytest.fail("nothing to render with"))
+    status = []
+    monkeypatch.setattr(cr, "_write_podcast_status", lambda pending: status.append([s["date_str"] for s in pending]))
+    cr.run_podcast_pass(7)
+    assert status == [["260916"]]                  # the Mac sees what to make
+    assert "recording 1 missing episode(s) for the Mac" in capsys.readouterr().out
+
+
+def test_podcast_status_raises_todoist_alert_only_in_the_cloud(tmp_path, monkeypatch):
+    import path_config, todoist_sync
+    monkeypatch.setattr(path_config, "CONFIG_FILE", tmp_path / "canvas_config.json")
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    calls = []
+    monkeypatch.setattr(todoist_sync, "alert", lambda key, active, *a, **k: calls.append((key, active)))
+    monkeypatch.setattr(cr, "_PODCAST_AUTH_FAILED", "expired")
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    cr._write_podcast_status([])
+    assert calls == []                             # the Mac's login says nothing about the cloud's
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    cr._write_podcast_status([])
+    monkeypatch.setattr(cr, "_PODCAST_AUTH_FAILED", None)
+    cr._write_podcast_status([])
+    assert calls == [("notebooklm_login", True), ("notebooklm_login", False)]
+    s = json.loads((tmp_path / "podcast_status.json").read_text())
+    assert s["auth_ok"] is True and s["pending"] == []

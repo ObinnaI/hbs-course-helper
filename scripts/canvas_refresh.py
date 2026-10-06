@@ -1646,6 +1646,21 @@ def _write_podcast_status(pending: list[dict]) -> None:
     if gh_out:
         with open(gh_out, "a") as fh:
             fh.write(f"podcasts_skipped={'true' if _PODCAST_AUTH_FAILED else 'false'}\n")
+    # The alert is about the cloud's stored login; the Mac's own login says nothing about it.
+    if os.getenv("GITHUB_ACTIONS") == "true":
+        try:
+            import todoist_sync
+            todoist_sync.alert(
+                "notebooklm_login", bool(_PODCAST_AUTH_FAILED),
+                "NotebookLM login expired — podcasts are being made on the Mac",
+                "The nightly cloud run could not sign in to NotebookLM. Your Mac makes the "
+                "missing episodes while its lid is open. To fix the cloud, in Terminal on the Mac:\n"
+                "1. notebooklm login   (only if `notebooklm auth check --test` fails)\n"
+                "2. gh -R ObinnaI/hbs-coursework-2026 secret set NOTEBOOKLM_AUTH_JSON "
+                "< ~/.notebooklm/profiles/default/storage_state.json\n"
+                "This task closes itself after the next run that signs in.")
+        except Exception as e:
+            print(f"  ⚠ Todoist alert failed: {e}")
 
 
 # ── Connectivity ──────────────────────────────────────────────────────────────
@@ -1693,7 +1708,8 @@ def run_podcast_pass(horizon_days: int = PODCAST_HORIZON_DAYS,
     max_per_run caps one run (a CI job has a time limit); the rest wait.
     """
     sessions = get_upcoming_sessions(horizon_days=horizon_days)
-    stale = [s for s in sessions if podcast_stale(s)]
+    # With no working login, an out-of-date episode is still better than none.
+    stale = [] if _PODCAST_AUTH_FAILED else [s for s in sessions if podcast_stale(s)]
     for s in stale:
         old = _podcast_path(s)
         print(f"  ↻ {s['abbrev']} {s['date_str']}: readings or cheat sheet changed since the episode was made — rebuilding")
@@ -1719,6 +1735,12 @@ def run_podcast_pass(horizon_days: int = PODCAST_HORIZON_DAYS,
     if max_per_run and len(pending) > max_per_run:
         print(f"  {len(pending)} missing; doing {max_per_run} this run, the rest next time.")
         todo = pending[:max_per_run]
+    if _PODCAST_AUTH_FAILED:
+        print(f"  NotebookLM login failed ({_PODCAST_AUTH_FAILED}); recording {len(pending)} "
+              "missing episode(s) for the Mac to make: "
+              + ", ".join(f"{s['abbrev']} {s['date_str']}" for s in pending))
+        _write_podcast_status(pending)
+        return
     print(f"  {len(todo)} of {len(sessions)} session(s) still need one "
           f"(~{len(todo) * 10} min, one at a time):")
     for s in todo:
@@ -2013,6 +2035,10 @@ def main():
     parser.add_argument("--with-podcast", action="store_true",
                         help="Also generate NotebookLM podcasts for sessions within the podcast "
                              "window (requires notebooklm login; adds ~10 min per session)")
+    parser.add_argument("--podcast-login-failed", action="store_true",
+                        help="The NotebookLM login check failed before this run: make no "
+                             "podcasts, but record the missing ones in podcast_status.json "
+                             "so the Mac mirror job makes them")
     parser.add_argument("--podcast-days", type=int, default=PODCAST_HORIZON_DAYS,
                         metavar="N",
                         help=f"How many days ahead to make podcasts for "
@@ -2029,8 +2055,11 @@ def main():
                              "cheat sheets can exhaust a subscription's 5-hour window.")
     args = parser.parse_args()
 
-    global NOTES_MAX
+    global NOTES_MAX, _PODCAST_AUTH_FAILED
     NOTES_MAX = args.notes_max
+    if args.podcast_login_failed:
+        _PODCAST_AUTH_FAILED = "login check failed before the run"
+        args.with_podcast = True
     if notes_backend.backend(cfg) == "claude-code":
         ver = notes_backend.claude_version()
         print(f"  Notes via Claude Code {ver or '(not installed!)'}, model {notes_backend.model(cfg)}")

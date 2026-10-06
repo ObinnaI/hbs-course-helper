@@ -425,6 +425,51 @@ def run(dry_run: bool = False, now: "datetime | None" = None, client: "Client | 
     return summary
 
 
+def alert(key: str, active: bool, content: str, description: str = "",
+          client: "Client | None" = None) -> None:
+    """
+    One standing task for a problem only the student can fix (an expired login).
+    Opened when `active` and none is open; closed once the problem has gone.
+    Ticking it off while the problem remains makes a new one on the next run.
+    Kept under state["alerts"], so the deadline sync never touches it.
+    """
+    import canvas_refresh as cr
+    token = cr.cfg("TODOIST_API_TOKEN")
+    if (cr.cfg("TASKS_BACKEND") or "none").lower() != "todoist" or (not token and client is None):
+        return
+    client = client or Client(token)
+    state = load_state()
+    alerts = state.setdefault("alerts", {})
+    tid = alerts.get(key)
+    try:
+        if active:
+            if tid:
+                try:
+                    if not _task_is_closed(client.get_task(tid)):
+                        return
+                except TodoistError:
+                    pass                       # deleted in Todoist: make a new one
+            pid = _ensure_project(client, state, cr.cfg("TODOIST_PROJECT") or DEFAULT_PROJECT, False)
+            t = client.create_task({"content": content, "description": description,
+                                    "project_id": pid, "priority": 4, "due_string": "today",
+                                    "labels": ["hbs"]})
+            alerts[key] = t["id"]
+            print(f"  Todoist: alert opened — {content}")
+        elif tid:
+            try:
+                client.close_task(tid)
+            except TodoistError:
+                pass                           # already closed or deleted
+            alerts.pop(key, None)
+            print(f"  Todoist: alert closed — {content}")
+        else:
+            return
+    except TodoistError as e:
+        print(f"  ⚠ Todoist alert: {e}")
+        return
+    save_state(state)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
