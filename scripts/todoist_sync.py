@@ -470,12 +470,32 @@ def alert(key: str, active: bool, content: str, description: str = "",
     save_state(state)
 
 
+# Standing alerts the workflow raises from a step's outcome (`--alert NAME on|off`).
+ALERTS = {
+    "claude_login": (
+        "Claude login expired — cheat sheets are not being written",
+        "The nightly cloud run could not sign in to Claude Code, so new cheat sheets, quiz "
+        "guides and poll deadlines wait. In Terminal on the Mac:\n"
+        "1. claude setup-token   (sign in in the browser; it prints a long token)\n"
+        "2. gh -R ObinnaI/hbs-coursework-2026 secret set CLAUDE_CODE_OAUTH_TOKEN   (paste the token)\n"
+        "This task closes itself after the next run that signs in."),
+}
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-llm", action="store_true", help="Rules only for uncertain postings")
+    ap.add_argument("--alert", nargs=2, metavar=("NAME", "on|off"),
+                    help=f"Open or close a standing alert task ({', '.join(ALERTS)}) and exit")
     args = ap.parse_args(argv)
+    if args.alert:
+        name, state = args.alert
+        if name not in ALERTS or state not in ("on", "off"):
+            ap.error(f"--alert takes one of {', '.join(ALERTS)} and on|off")
+        alert(name, state == "on", *ALERTS[name])
+        return 0
     run(dry_run=args.dry_run, llm=not args.no_llm)
     return 0
 

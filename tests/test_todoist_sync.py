@@ -256,3 +256,17 @@ def test_alert_task_is_not_adopted_by_the_deadline_sync(env, monkeypatch):
     tid = ts.load_state()["alerts"]["nlm"]
     assert not c._tasks[tid]["checked"]
     assert all(v.get("task_id") != tid for v in ts.load_state()["tasks"].values())
+
+
+def test_alert_cli_opens_and_closes_claude_login(env, monkeypatch):
+    monkeypatch.setenv("TASKS_BACKEND", "todoist")
+    c = FakeClient()
+    monkeypatch.setattr(ts, "Client", lambda token: c)
+    assert ts.main(["--alert", "claude_login", "on"]) == 0
+    tid = ts.load_state()["alerts"]["claude_login"]
+    assert c._tasks[tid]["content"].startswith("Claude login expired")
+    assert "claude setup-token" in c._tasks[tid]["description"]
+    ts.main(["--alert", "claude_login", "off"])
+    assert c._tasks[tid]["checked"]
+    with pytest.raises(SystemExit):
+        ts.main(["--alert", "nope", "on"])
