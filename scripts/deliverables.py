@@ -255,6 +255,164 @@ def classify_many(postings: list, overrides: "dict | None" = None,
     return results
 
 
+# ── Pre-class actions inside class postings ──────────────────────────────────
+#
+# Polls and surveys often live inside a class posting rather than as postings
+# of their own: "please enter your initial assessment in this survey by 8pm on
+# Wednesday (10/21): <Qualtrics link>", or a link to a Canvas poll that has no
+# due date of its own ("Pre-Class Poll: Class 16"). Neither reaches the
+# deadline list on its own, so each becomes a synthetic deliverable row: the
+# undated Canvas poll takes its class's start time; a survey named in the text
+# takes the deadline the text gives (Claude reads it, cached per posting) or,
+# failing that, the class's start time.
+
+ACTION_BEHIND_DAYS, ACTION_AHEAD_DAYS = 14, 30
+_ACTION_RE = re.compile(
+    r"\b(poll|survey|questionnaire|qualtrics|google form|sign[- ]?up|fill (in|out)|"
+    r"submit(ted)?|complete (the|this|a|your)|enter your|before class|prior to class)\b", re.I)
+_FORM_LINK_RE = re.compile(
+    r"https?://[^\s\"'<>)]*(qualtrics\.com|forms\.gle|docs\.google\.com/forms|"
+    r"forms\.office\.com|surveymonkey\.com|typeform\.com)[^\s\"'<>)]*", re.I)
+_CANVAS_LINK_RE = re.compile(r"/courses/\d+/(assignments|quizzes)/(\d+)")
+
+_ACTIONS_RUBRIC = """You read Canvas class postings for an HBS MBA student and list the things the student must DO outside class before a deadline: complete a survey or poll, fill in a form, submit results or an assessment through a link, sign up for something.
+Not actions: reading the case or articles, preparing discussion questions, optional material, anything done in class.
+Skip links to Canvas quizzes or assignments (URLs containing /quizzes/ or /assignments/); those are tracked separately.
+For each posting you get its id, when the class meets (Boston time), today's date and the text with links in parentheses.
+Reply with JSON only: {"<id>": [{"title": "<imperative, at most 8 words, e.g. Complete SG Cowen assessment survey>", "deadline": "<YYYY-MM-DDTHH:MM Boston time, or null when the text gives none>", "link": "<URL or null>"}], ...}
+Resolve weekday-only deadlines ("by Wednesday evening") against the class date: normally the nearest such day on or before the class; when the text says the work follows the class (results submitted after a negotiation), the nearest such day after it. "Evening" without a time is 20:00, "midnight" is 23:59 of that day, a day without a time is 23:59. An id with no actions maps to []."""
+
+
+def _text_with_links(html: str) -> str:
+    html = re.sub(r'<a\s[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+                  lambda m: f"{m.group(2)} ({m.group(1).replace('&amp;', '&')})", html or "",
+                  flags=re.I | re.S)
+    return _strip(html)
+
+
+def _local_to_utc(local: str) -> "str | None":
+    from zoneinfo import ZoneInfo
+    try:
+        dt = datetime.fromisoformat(local.strip()[:16])
+    except (ValueError, AttributeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo("America/New_York"))
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _llm_actions(items: list) -> dict:
+    """{posting id: [action, ...]} from one Claude Code call. Raises on failure."""
+    import notes_backend
+    model = os.getenv("CLASSIFY_MODEL") or "claude-sonnet-5"
+    text, _ = notes_backend.generate_with_claude_code(
+        path_config.CONFIG_FILE.parent, _ACTIONS_RUBRIC,
+        "List the actions in each posting in the JSON on stdin. Reply with JSON only.",
+        json.dumps(items, ensure_ascii=False), model)
+    start = text.find("{")
+    data = json.loads(text[start:text.rfind("}") + 1]) if start >= 0 else {}
+    return {str(k): [x for x in (v or []) if isinstance(x, dict) and x.get("title")]
+            for k, v in data.items() if isinstance(v, list)}
+
+
+def _rule_actions(text: str) -> list:
+    """Without Claude: one action per survey/form link, due before class."""
+    out, seen = [], set()
+    for m in _FORM_LINK_RE.finditer(text):
+        link = m.group(0).rstrip(".,;")
+        if link not in seen:
+            seen.add(link)
+            out.append({"title": "Complete the survey linked in the posting",
+                        "deadline": None, "link": link, "guess": True})
+    return out
+
+
+def pre_class_actions(sessions: list, postings: list, now: datetime,
+                      llm: bool = True, course: str = "") -> "list[tuple[dict, str]]":
+    """Synthetic deliverables (assignment-shaped dicts, reason) for the class postings given."""
+    lo, hi = now - timedelta(days=ACTION_BEHIND_DAYS), now + timedelta(days=ACTION_AHEAD_DAYS)
+    sessions = [s for s in sessions if s.get("due_at") and lo <= _due_utc(s) <= hi]
+    undated = [a for a in postings if not a.get("due_at") and a.get("published") is not False]
+    by_assignment = {str(a.get("id")): a for a in undated}
+    by_quiz = {str(a.get("quiz_id")): a for a in undated if a.get("quiz_id")}
+    out: list = []
+    used: set = set()
+
+    # 1. Undated Canvas polls linked from, or numbered like, a class posting.
+    for s in sessions:
+        number = canvas_common.class_number(s.get("name") or "")
+        hits = []
+        for kind, num in _CANVAS_LINK_RE.findall(s.get("description") or ""):
+            hits.append((by_assignment if kind == "assignments" else by_quiz).get(num))
+        if number is not None:
+            hits += [a for a in undated if _QUIZ_LIKE_RE.search(a.get("name") or "")
+                     and canvas_common.class_number(a.get("name") or "") == number]
+        for a in hits:
+            if a is None or str(a.get("id")) in used:
+                continue
+            used.add(str(a.get("id")))
+            out.append((dict(a, due_at=s["due_at"]),
+                        f"undated poll; due before {(s.get('name') or '').strip()}"))
+
+    # 2. Surveys and forms named in the posting's text.
+    texts = {str(s.get("id")): _text_with_links(s.get("description") or "") for s in sessions}
+    candidates = [s for s in sessions if _ACTION_RE.search(texts[str(s.get("id"))])]
+    if os.getenv("TASKS_LLM", "1") in ("0", "false", "no"):
+        llm = False
+    state = _load_state()
+    cache = state.setdefault("actions", {})
+    todo = [s for s in candidates
+            if (cache.get(str(s.get("id"))) or {}).get("fp")
+            != hashlib.md5(texts[str(s.get("id"))].encode()).hexdigest()[:12]]
+    answers: dict = {}
+    if todo and llm:
+        import canvas_refresh as cr
+        items = [{"id": str(s.get("id")), "course": course, "name": s.get("name"),
+                  "class_meets": cr.boston_date(s["due_at"]).strftime("%a %Y-%m-%d %H:%M"),
+                  "today": cr.boston_date(now.isoformat()).strftime("%a %Y-%m-%d"),
+                  "text": texts[str(s.get("id"))][:3000]} for s in todo[:20]]
+        try:
+            answers = _llm_actions(items)
+        except Exception as e:
+            print(f"    ⚠ Claude could not read pre-class actions ({str(e)[:80]}); using survey links only")
+    if answers:
+        for s in todo:
+            sid = str(s.get("id"))
+            if sid in answers:
+                cache[sid] = {"fp": hashlib.md5(texts[sid].encode()).hexdigest()[:12],
+                              "actions": answers[sid]}
+        _save_state(state)
+
+    for s in candidates:
+        sid = str(s.get("id"))
+        hit = cache.get(sid)
+        fresh = hit and hit.get("fp") == hashlib.md5(texts[sid].encode()).hexdigest()[:12]
+        actions = hit["actions"] if fresh else _rule_actions(texts[sid])
+        cls = (s.get("name") or "").strip()
+        for act in actions:
+            link = (act.get("link") or "").strip() or None
+            if link and _CANVAS_LINK_RE.search(link):
+                continue                              # a Canvas poll: handled in step 1
+            due = _local_to_utc(act["deadline"]) if act.get("deadline") else None
+            # A deadline a week past the class is a misreading; none at all means before class.
+            if not due or _due_utc({"due_at": due}) > _due_utc(s) + timedelta(days=7):
+                due = s["due_at"]
+            key = hashlib.md5((link or act["title"].lower()).encode()).hexdigest()[:6]
+            note = ("Deadline not stated; due before class. " if due == s["due_at"] else "") + \
+                   ("Check the posting for an earlier deadline. " if act.get("guess") else "")
+            out.append(({
+                "id": f"{sid}-{key}",
+                "name": act["title"].strip(),
+                "due_at": due,
+                "html_url": link or s.get("html_url", ""),
+                "description": f"{note}From the class posting “{cls}”: {s.get('html_url', '')}",
+                "submission_types": ["external"],
+                "points_possible": 0,
+                "submission": {},
+            }, f"named in the posting for {cls}"))
+    return out
+
+
 # ── Collection across courses ─────────────────────────────────────────────────
 
 def _due_utc(a: dict) -> datetime:
@@ -290,7 +448,10 @@ def collect(courses: dict, now: "datetime | None" = None, since_days: int = 3,
         for a in window:
             kind, reason = kinds[str(a.get("id"))]
             rows.append({"abbrev": abbrev, "cid": cid, "a": a, "kind": kind, "reason": reason})
-    rows.sort(key=lambda r: (r["a"]["due_at"], r["abbrev"], r["a"].get("id")))
+        sessions = [a for a in window if is_session_kind(kinds[str(a.get("id"))][0])]
+        for a, reason in pre_class_actions(sessions, postings, now, llm=llm, course=abbrev):
+            rows.append({"abbrev": abbrev, "cid": cid, "a": a, "kind": "deliverable", "reason": reason})
+    rows.sort(key=lambda r: (r["a"]["due_at"], r["abbrev"], str(r["a"].get("id"))))
     return rows
 
 

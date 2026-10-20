@@ -131,3 +131,95 @@ def test_collect_windows_and_includes_submission(state_dir, monkeypatch):
     assert [r["a"]["id"] for r in rows] == [3]           # poll too old, final too far, office undated
     assert rows[0]["kind"] == "deliverable" and not dv.submission_done(rows[0]["a"])
     assert dv.submission_done(posts[1])
+
+
+# ── Pre-class actions inside class postings ───────────────────────────────────
+
+from datetime import datetime, timezone
+
+NOW = datetime(2026, 10, 20, 16, tzinfo=timezone.utc)
+SG = _p(501, "Class 2 (Oct 22): SG Cowen (Case)", ["none"], due="2026-10-22T15:50:00Z",
+        html_url="https://canvas/a/501",
+        desc='<p>Please enter your initial assessment in this survey by 8pm on Wednesday evening (10/21): '
+             '<a href="https://hbs.qualtrics.com/jfe/form/SV_9vpP">https://hbs.qualtrics.com/jfe/form/SV_9vpP</a></p>')
+PCS = _p(502, "GTD | Class 16: Pravost Consulting Services", ["none"], due="2026-10-22T17:30:00Z",
+         desc='<p>Please complete this pre-class poll: '
+              '<a href="https://hbs.instructure.com/courses/17077/quizzes/17139">Pre-Class Poll: Class 16</a></p>')
+POLL16 = _p(1174372, "Pre-Class Poll: Class 16 (Counts Towards Participation)", ["online_quiz"],
+            due=None, quiz_id=17139)
+POLL17 = _p(1174373, "Pre-Class Poll: Class 17", ["online_quiz"], due=None)
+CLASS17 = _p(503, "GTD | Class 17: Somewhere", ["none"], due="2026-10-23T17:30:00Z", desc="<p>Read the case.</p>")
+OLD_CLASS = _p(504, "Class 1: Long ago", ["none"], due="2026-09-01T15:50:00Z",
+               desc='<p>Fill out <a href="https://forms.gle/x">this form</a></p>')
+
+
+def test_undated_canvas_polls_take_their_class_time(state_dir, monkeypatch):
+    monkeypatch.setenv("TASKS_LLM", "0")
+    sessions = [PCS, CLASS17]
+    out = dv.pre_class_actions(sessions, sessions + [POLL16, POLL17], NOW)
+    got = {a["id"]: (a["due_at"], why) for a, why in out}
+    assert got[1174372][0] == PCS["due_at"] and "Class 16" in got[1174372][1]   # by link
+    assert got[1174373][0] == CLASS17["due_at"]                                 # by class number
+    assert len(out) == 2                    # the Canvas quiz link is not also a text action
+
+
+def test_survey_links_without_claude_are_due_before_class(state_dir, monkeypatch):
+    monkeypatch.setenv("TASKS_LLM", "0")
+    out = dv.pre_class_actions([SG, OLD_CLASS], [SG, OLD_CLASS], NOW)
+    assert len(out) == 1                    # the September class is outside the window
+    a, why = out[0]
+    assert a["due_at"] == SG["due_at"] and a["html_url"] == "https://hbs.qualtrics.com/jfe/form/SV_9vpP"
+    assert "earlier deadline" in a["description"] and "SG Cowen" in why
+    assert not dv.submission_done(a)
+
+
+def test_claude_reads_deadlines_once_and_converts_boston_time(state_dir, monkeypatch):
+    calls = []
+    def fake(items):
+        calls.append([i["id"] for i in items])
+        assert "SV_9vpP" in items[0]["text"] and items[0]["class_meets"].startswith("Thu 2026-10-22")
+        return {"501": [
+            {"title": "Complete SG Cowen assessment survey", "deadline": "2026-10-21T20:00",
+             "link": "https://hbs.qualtrics.com/jfe/form/SV_9vpP"},
+            {"title": "Answer the Canvas poll", "deadline": None,
+             "link": "https://hbs.instructure.com/courses/1/quizzes/9"},          # Canvas: skipped
+            {"title": "Misread deadline", "deadline": "2026-12-25T09:00", "link": None},
+        ]}
+    monkeypatch.setattr(dv, "_llm_actions", fake)
+    out = dv.pre_class_actions([SG], [SG], NOW)
+    by_name = {a["name"]: a for a, _ in out}
+    assert set(by_name) == {"Complete SG Cowen assessment survey", "Misread deadline"}
+    assert by_name["Complete SG Cowen assessment survey"]["due_at"] == "2026-10-22T00:00:00Z"   # 8pm EDT
+    assert by_name["Misread deadline"]["due_at"] == SG["due_at"]                  # pulled back to class
+    again = dv.pre_class_actions([SG], [SG], NOW)
+    assert calls == [["501"]] and [a["id"] for a, _ in again] == [a["id"] for a, _ in out]
+    edited = dict(SG, description=SG["description"] + "<p>Updated.</p>")
+    dv.pre_class_actions([edited], [edited], NOW)
+    assert calls == [["501"], ["501"]]
+
+
+def test_claude_failure_falls_back_to_links_without_caching(state_dir, monkeypatch, capsys):
+    def boom(items):
+        raise RuntimeError("usage limit")
+    monkeypatch.setattr(dv, "_llm_actions", boom)
+    out = dv.pre_class_actions([SG], [SG], NOW)
+    assert [a["name"] for a, _ in out] == ["Complete the survey linked in the posting"]
+    assert "could not read pre-class actions" in capsys.readouterr().out
+    state = state_dir / "deliverables_state.json"
+    assert not state.exists() or "501" not in json.loads(state.read_text()).get("actions", {})
+
+
+def test_collect_adds_pre_class_rows_that_todoist_accepts(state_dir, monkeypatch):
+    import todoist_sync as ts
+    monkeypatch.setenv("TASKS_LLM", "0")
+    posts = [SG, PCS, POLL16]
+    monkeypatch.setattr(cr, "canvas_get", lambda path, params=None: posts)
+    courses = {"MHC": {"canvas_id": 17040, "term_end": None, "full_name": "Managing Human Capital"}}
+    rows = dv.collect(courses, now=NOW, llm=False)
+    extra = [r for r in rows if r["reason"].startswith(("undated poll", "named in"))]
+    assert {r["kind"] for r in extra} == {"deliverable"} and len(extra) == 2
+    tasks = ts.desired_tasks(rows, courses, NOW)
+    names = {t["content"] for t in tasks}
+    assert "Complete the survey linked in the posting (MHC)" in names
+    assert "Pre-Class Poll: Class 16 (Counts Towards Participation) (MHC)" in names
+    assert all(t["uid"].startswith("17040-") for t in tasks)

@@ -189,6 +189,8 @@ On refresh, existing ratings are preserved (matched by the course name in the co
 
 **What counts as a deliverable** is decided by `deliverables.py`, not by Canvas's `submission_types` alone: at HBS one course posts class sessions as text entries and another posts real to-dos as `not_graded`. Rules cover almost everything; the few uncertain postings are put to Claude once (cached in `claude/deliverables_state.json`), and `deliverable_overrides` in `canvas_config.json` pins any posting by id: `{"1177030": "deliverable", "1175395": "session"}`. Run `python3 scripts/deliverables.py --classify` to audit. The same decision feeds the cheat-sheet pipeline, so a class posted as a text entry still gets its folder and notes.
 
+**Polls and surveys inside class postings** become deliverables too, for classes from two weeks back to a month ahead. A Canvas poll with no due date of its own that a class posting links to, or whose class number matches ("Pre-Class Poll: Class 16"), is due when that class starts. A survey or form named in the posting's text ("enter your assessment in this survey by 8pm Wednesday: <Qualtrics link>") is read by Claude for its title and deadline, cached per posting under `actions` in `claude/deliverables_state.json`; without Claude, each survey link becomes "Complete the survey linked in the posting", due at the start of class. Both reach Todoist and the calendar feed like any other deadline.
+
 ---
 
 ## Emailed role materials, negotiation playbooks and the calculator
