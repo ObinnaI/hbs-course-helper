@@ -6,12 +6,43 @@
 set -euo pipefail
 REPO="${1:-ObinnaI/hbs-coursework-2026}"
 f=$(mktemp); chmod 600 "$f"; trap 'rm -f "$f"' EXIT
-script -q "$f" claude setup-token
-t=$(sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' "$f" | tr -d '\r' \
-    | sed -n '/OAuth token/,/Store this token/{/OAuth token/d;/Store this token/d;p;}' \
-    | tr -d '[:space:]' | grep -o 'sk-ant-oat01-[A-Za-z0-9_-]*' || true)
+script -q "$f" claude setup-token || true
+
+# Find the token in the captured terminal output. Terminal control codes are
+# stripped, and a token that wrapped onto a second line is joined back.
+t=$(python3 - "$f" <<'PY'
+import re, sys
+raw = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
+txt = re.sub(r"\x1b\[[^A-Za-z]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Z0-9]|\x1b[=>]", "", raw)
+txt = txt.replace("\r", "")
+m = re.search(r"sk-ant-oat01-[A-Za-z0-9_-]+(?:[ \t]*\n[ \t]*([A-Za-z0-9_-]+)[ \t]*(?=\n))?", txt)
+if m:
+    print(re.sub(r"\s+", "", m.group(0)))
+PY
+)
+
 if [[ ${#t} -lt 90 ]]; then
-    echo "Could not find the token in the output (${#t} chars). Nothing was stored."; exit 1
+    # Keep a copy of the output with every long token-like run blanked, so the
+    # parsing can be fixed without the token ever leaving this machine.
+    mkdir -p "$HOME/.hbs-mirror"
+    python3 - "$f" > "$HOME/.hbs-mirror/setup-token-debug.txt" <<'PY'
+import re, sys
+raw = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
+print(repr(re.sub(r"[A-Za-z0-9_-]{20,}", "<REDACTED>", raw)))
+PY
+    echo
+    echo "Could not read the token from the output (a redacted copy of the output is in"
+    echo "~/.hbs-mirror/setup-token-debug.txt). Select the whole token above, from"
+    echo "sk-ant-oat01- to the end of its second line, copy it, paste it here and press"
+    echo "Enter twice:"
+    t=""
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && break
+        t+="${line//[[:space:]]/}"
+    done
+    if [[ $t != sk-ant-oat01-* || ${#t} -lt 90 ]]; then
+        echo "That is not a token (${#t} characters, should start with sk-ant-oat01-). Nothing was stored."; exit 1
+    fi
 fi
 printf %s "$t" | gh -R "$REPO" secret set CLAUDE_CODE_OAUTH_TOKEN
 echo "Stored a ${#t}-character token. It was not saved anywhere else."
