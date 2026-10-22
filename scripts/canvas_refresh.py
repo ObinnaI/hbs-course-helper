@@ -82,12 +82,13 @@ PODCAST_HORIZON_DAYS = 7
 
 
 def daily_horizon_days() -> int:
-    """How far ahead the daily run prepares (default 3: today plus three days),
-    so a cheat sheet and its podcast exist well before the morning of class."""
+    """How far ahead the daily run prepares (default 7: today plus a week), so a
+    cheat sheet and its podcast exist well before class. A session whose readings
+    have not arrived waits (see readings_missing), so a long horizon costs nothing."""
     try:
         return max(1, int(cfg("DAILY_HORIZON_DAYS") or 7))
     except ValueError:
-        return 3
+        return 7
 
 # ── Env / config ──────────────────────────────────────────────────────────────
 
