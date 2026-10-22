@@ -272,8 +272,8 @@ def test_visible_md_twins_are_hidden(tmp_path):
 
 def test_daily_horizon_setting(monkeypatch):
     monkeypatch.delenv("DAILY_HORIZON_DAYS", raising=False)
-    assert cr.daily_horizon_days() == 3
+    assert cr.daily_horizon_days() == 7
     monkeypatch.setenv("DAILY_HORIZON_DAYS", "5")
     assert cr.daily_horizon_days() == 5
     monkeypatch.setenv("DAILY_HORIZON_DAYS", "junk")
-    assert cr.daily_horizon_days() == 3
+    assert cr.daily_horizon_days() == 7

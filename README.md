@@ -10,7 +10,7 @@ Works with any Canvas LMS instance (Harvard Business School, Stanford GSB, Whart
 
 | Script | Purpose |
 |--------|---------|
-| `canvas_refresh.py --daily` | Sync files + download readings + regenerate stale notes for sessions in the next 3 days (`DAILY_HORIZON_DAYS`). Runs automatically at 5pm via launchd. |
+| `canvas_refresh.py --daily` | Sync files + download readings + regenerate stale notes for sessions in the next 7 days (`DAILY_HORIZON_DAYS`). Runs automatically at 5pm via launchd. |
 | `canvas_refresh.py --weekly` | Full 6-week sync, reading downloads, notes for 2-week window, weekly overview doc, calendar sync, participation tracker refresh. Runs automatically Sunday 8am via launchd. |
 | `canvas_readings.py YYMMDD COURSE` | Download all linked readings for one session (HBSP cases, articles, YouTube stubs). |
 | `canvas_organize.py` | Route files to correct folders (slides to `Slides/`, etc.) and move duplicates to Trash. Runs automatically after every sync. |
@@ -38,7 +38,7 @@ Two jobs run automatically once set up — on your Mac via launchd (`./setup.sh 
 
 ### Daily at 5pm — `canvas_refresh.py --daily`
 
-1. Discover class sessions with due dates in the next 2 calendar days (quizzes and uploads are deliverables, not sessions — they go to the calendar instead)
+1. Discover class sessions with due dates in the next 7 calendar days (`DAILY_HORIZON_DAYS`; a session whose readings have not arrived waits until 48 h before class) (quizzes and uploads are deliverables, not sessions — they go to the calendar instead)
 2. Sync Canvas-hosted files for those sessions (files attached in Canvas folders and assignments)
 3. Download externally-linked readings (HBSP cases, articles → PDF, YouTube → stub)
 4. Generate or refresh Notes `.docx` if stale (new files, edited Canvas description, updated prompt)
@@ -187,6 +187,8 @@ On refresh, existing ratings are preserved (matched by the course name in the co
 
 **Cheat sheets are Word files.** Each `Cheat Sheet - <Title>.docx` has a hidden Markdown twin (`.Cheat Sheet - <Title>.md`) that the course brief and the podcast read; Finder does not show it, and any visible twin from an earlier version is tucked away on the next run.
 
+**Protected PDFs.** HBS course-packet PDFs are owner-protected with an empty password; viewers open them, but the model's PDF reader and NotebookLM refuse, and a cheat sheet would be written around the case. Every PDF is unlocked (rewritten without the protection, in place) when it is downloaded, filed from the inbox, copied into a Quiz folder, and again before notes or a podcast are made, so files dropped into iCloud are covered too. A PDF that needs a real password is skipped with a `(skipped).txt` stub and does not count as a reading, so the notes wait for a usable copy. `cryptography` is installed so AES-protected files unlock as well.
+
 **What counts as a deliverable** is decided by `deliverables.py`, not by Canvas's `submission_types` alone: at HBS one course posts class sessions as text entries and another posts real to-dos as `not_graded`. Rules cover almost everything; the few uncertain postings are put to Claude once (cached in `claude/deliverables_state.json`), and `deliverable_overrides` in `canvas_config.json` pins any posting by id: `{"1177030": "deliverable", "1175395": "session"}`. Run `python3 scripts/deliverables.py --classify` to audit. The same decision feeds the cheat-sheet pipeline, so a class posted as a text entry still gets its folder and notes.
 
 **Polls and surveys inside class postings** become deliverables too, for classes from two weeks back to a month ahead. A Canvas poll with no due date of its own that a class posting links to, or whose class number matches ("Pre-Class Poll: Class 16"), is due when that class starts. A survey or form named in the posting's text ("enter your assessment in this survey by 8pm Wednesday: <Qualtrics link>") is read by Claude for its title and deadline, cached per posting under `actions` in `claude/deliverables_state.json`; without Claude, each survey link becomes "Complete the survey linked in the posting", due at the start of class. Both reach Todoist and the calendar feed like any other deadline.
@@ -327,7 +329,7 @@ you leave it unset, they fall back to assuming they live at
 ## Usage
 
 ```bash
-# Daily sync (next 2 days)
+# Daily sync (next 7 days)
 ./.venv/bin/python scripts/canvas_refresh.py --daily
 
 # Weekly sync + overview + calendar
@@ -378,7 +380,7 @@ you leave it unset, they fall back to assuming they live at
 
 | Flag | Script | Effect |
 |------|--------|--------|
-| `--daily` | `canvas_refresh.py` | Sync next 2 days and refresh stale notes |
+| `--daily` | `canvas_refresh.py` | Sync the next 7 days and refresh stale notes |
 | `--weekly` | `canvas_refresh.py` | Full 6-week sync + overview + calendar + tracker |
 | `--with-podcast` | `canvas_refresh.py` | Also generate podcasts (weekly at a terminal: interactive skip-list; otherwise unattended) |
 | `--podcasts-only` | `canvas_refresh.py` | No sync; just fill in missing podcasts (the Mac's fallback when the cloud couldn't) |

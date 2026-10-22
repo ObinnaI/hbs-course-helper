@@ -215,6 +215,7 @@ async def _generate(date_str: str, abbrev: str):
 def collect_sources(session_dir: Path, date_str: str, abbrev: str,
                     assignments: list) -> "tuple[list, str | None]":
     """The readings (deduplicated, page-limited) and cheat-sheet text an episode is built from."""
+    _cc.unlock_readings(session_dir)          # NotebookLM refuses protected PDFs too
     reading_files = sorted(
         (f for f in session_dir.iterdir()
          if f.is_file() and f.suffix.lower() in _cr.READING_EXTS
@@ -232,6 +233,9 @@ def collect_sources(session_dir: Path, date_str: str, abbrev: str,
     usable, seen = [], {}
     for f in reading_files:
         if f.suffix.lower() == ".pdf":
+            if _cc.pdf_locked(f):
+                print(f"  ⚠ Skipping (password-protected): {f.name}")
+                continue
             pages = _cr.pdf_page_count(f)
             if pages > _cr.PDF_PAGE_LIMIT:
                 print(f"  ⚠ Skipping ({pages}p > {_cr.PDF_PAGE_LIMIT}p limit): {f.name}")

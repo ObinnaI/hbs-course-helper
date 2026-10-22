@@ -299,3 +299,22 @@ def test_podcast_status_raises_todoist_alert_only_in_the_cloud(tmp_path, monkeyp
     assert calls == [("notebooklm_login", True), ("notebooklm_login", False)]
     s = json.loads((tmp_path / "podcast_status.json").read_text())
     assert s["auth_ok"] is True and s["pending"] == []
+
+
+from test_unlock_pdf import _pdf
+
+
+def test_notes_skip_a_locked_reading_with_a_stub(notes_env, monkeypatch, capsys):
+    d = notes_env.parent / "260924 Class 7 - MFS"; d.mkdir()
+    _pdf(d / "Locked case.pdf", user_pw="x")
+    open_pdf = _pdf(d / "Open note.pdf")
+    sent = []
+    def fake(session, session_dir, master, canvas_block, reading_files, skipped):
+        sent.extend(f.name for f in reading_files); return "# Body\n"
+    monkeypatch.setattr(cr, "_generate_via_claude_code", fake)
+    cr.generate_notes({"abbrev": "LTV", "date_str": "260924", "course_id": 40001, "due_dt": None,
+                       "assignments": [{"id": 1, "name": "Class 7: MFS", "description": "<p>Read the case.</p>"}],
+                       "assignment": {"id": 1, "name": "Class 7: MFS", "description": "<p>Read the case.</p>"}})
+    assert sent == ["Open note.pdf"]
+    assert (d / "Locked case (skipped).txt").read_text().startswith("NOT included")
+    assert "password-protected" in capsys.readouterr().out

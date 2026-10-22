@@ -85,7 +85,7 @@ def daily_horizon_days() -> int:
     """How far ahead the daily run prepares (default 3: today plus three days),
     so a cheat sheet and its podcast exist well before the morning of class."""
     try:
-        return max(1, int(cfg("DAILY_HORIZON_DAYS") or 3))
+        return max(1, int(cfg("DAILY_HORIZON_DAYS") or 7))
     except ValueError:
         return 3
 
@@ -174,6 +174,7 @@ def canvas_download(url: str, dest: Path) -> bool:
     try:
         resp = _opener.open(req, timeout=60)
         dest.write_bytes(resp.read())
+        canvas_common.unlock_pdf(dest)
         return True
     except (HTTPError, URLError, OSError) as e:
         print(f"      ✗ {dest.name}: {e}")
@@ -971,7 +972,8 @@ def readings_expected(assignments) -> bool:
 def substantive_readings(files) -> list:
     """Case-like files: not announcements, YouTube stubs or markdown twins."""
     return [f for f in files
-            if f.suffix.lower() in SUBSTANTIVE_EXTS and "Announcement -" not in f.name]
+            if f.suffix.lower() in SUBSTANTIVE_EXTS and "Announcement -" not in f.name
+            and not (f.suffix.lower() == ".pdf" and canvas_common.pdf_locked(f))]
 
 
 def readings_missing(session: dict, session_dir: Path) -> "str | None":
@@ -1159,6 +1161,14 @@ def generate_notes(session: dict):
     session_dir.mkdir(parents=True, exist_ok=True)
 
     reading_files = _reading_files(session_dir)
+    # A protected PDF the model cannot open is worse than a missing one: the
+    # sheet would be written around it. Unlock what has an empty password and
+    # leave a stub for anything that needs a real one.
+    locked = [f for f in reading_files if canvas_common.unlock_pdf(f) == "locked"]
+    for f in locked:
+        _write_skip_stub(f, "password-protected PDF — open it in Preview and export a copy "
+                            "without the password into this folder")
+    reading_files = [f for f in reading_files if f not in locked]
 
     # Build prompt. Two genuine class postings on one day (rare) both go in,
     # each under its own header, so the Notes cover the whole folder.
@@ -1810,7 +1820,7 @@ def run_daily(skip_prompt_regen: bool = False, with_podcast: bool = False,
     sessions = get_upcoming_sessions(horizon_days=horizon)
 
     if not sessions:
-        print("  No upcoming sessions in the next 2 days.")
+        print(f"  No upcoming sessions in the next {horizon} days.")
         _sync_tasks()          # deadlines move on quiet days too
         return
 
@@ -1829,6 +1839,7 @@ def run_daily(skip_prompt_regen: bool = False, with_podcast: bool = False,
                      for a in s["assignments"])
         if n_read:
             print(f"    ↓ {n_read} reading(s) saved")
+        canvas_common.unlock_readings(session_dir)    # before the staleness check: an unlocked file is a changed file
 
         stale, reason = notes_are_stale(
             session_dir, abbrev, date_str,
@@ -1922,6 +1933,7 @@ def run_weekly(skip_prompt_regen: bool = False, with_podcast: bool = False,
                      for a in s["assignments"])
         if n_read:
             print(f"    ↓ {n_read} reading(s) saved")
+        canvas_common.unlock_readings(session_dir)    # before the staleness check: an unlocked file is a changed file
 
         stale, reason = notes_are_stale(
             session_dir, abbrev, date_str,

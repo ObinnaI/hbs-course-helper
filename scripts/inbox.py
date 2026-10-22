@@ -191,7 +191,9 @@ def route_item(item: Path, courses: dict, config: dict, cr, dry_run: bool = Fals
         dest = session_dir / canvas_common.safe_name(f.name)
         if dest.exists() and canvas_common.same_content(dest, f):
             continue
-        shutil.copy2(f, _unique(dest))
+        target = _unique(dest)
+        shutil.copy2(f, target)
+        canvas_common.unlock_pdf(target)
     if links:
         import canvas_readings
         title = f"{subject_title(subject)} - role (confidential)"

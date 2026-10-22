@@ -338,6 +338,7 @@ def build(abbrev: str, n: int, force: bool = False, dry_run: bool = False,
         dest.parent.mkdir(parents=True, exist_ok=True)
         if not dest.exists() or not canvas_common.same_content(src, dest):
             shutil.copy2(src, dest)
+            canvas_common.unlock_pdf(dest)
     if guides and guides[-1][3] is not None:
         (qdir / "Earlier").mkdir(exist_ok=True)
         dest = qdir / "Earlier" / guides[-1][3].name

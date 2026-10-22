@@ -19,6 +19,7 @@ a professor renaming a posting cannot spawn a second folder.
 """
 
 import hashlib
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +34,73 @@ def file_md5(path: Path, chunk: int = 1 << 20) -> str:
         for block in iter(lambda: fh.read(chunk), b""):
             h.update(block)
     return h.hexdigest()
+
+
+# ── Locked PDFs ───────────────────────────────────────────────────────────────
+#
+# HBS distributes cases with 128-bit "owner" protection and an empty user
+# password: any viewer opens them, but the PDF readers the notes model and
+# NotebookLM rely on refuse, and the cheat sheet is then written from the
+# posting alone. Rewriting the file without the protection loses nothing.
+
+def unlock_pdf(path) -> "str | None":
+    """
+    Strip empty-password protection from a PDF, in place.
+    "unlocked" when the file was rewritten; "locked" when a real password is
+    needed (file left as is); None when it was already open or is not a PDF.
+    """
+    path = Path(path)
+    if path.suffix.lower() != ".pdf" or not path.is_file():
+        return None
+    try:
+        from pypdf import PdfReader, PdfWriter
+        reader = PdfReader(str(path))
+        if not reader.is_encrypted:
+            return None
+    except Exception:
+        return None                                   # unreadable for other reasons: not our problem here
+    try:
+        if not reader.decrypt(""):
+            print(f"    🔒 password-protected, cannot be read: {path.name}")
+            return "locked"
+        tmp = path.with_name(path.name + ".unlocking")
+        with open(tmp, "wb") as fh:
+            PdfWriter(clone_from=reader).write(fh)
+        check = PdfReader(str(tmp))
+        if check.is_encrypted or len(check.pages) != len(reader.pages):
+            tmp.unlink(missing_ok=True)
+            print(f"    🔒 could not remove the protection: {path.name}")
+            return "locked"
+        os.replace(tmp, path)
+        print(f"    🔓 unlocked (empty-password protection removed): {path.name}")
+        return "unlocked"
+    except Exception as e:                            # AES without `cryptography`, damaged file
+        print(f"    🔒 could not unlock {path.name}: {str(e)[:80]}")
+        return "locked"
+
+
+def pdf_locked(path) -> bool:
+    """True when a PDF still needs a password nobody has (after unlock_pdf was tried)."""
+    try:
+        from pypdf import PdfReader
+        r = PdfReader(str(path))
+        return bool(r.is_encrypted and not r.decrypt(""))
+    except Exception:
+        return False
+
+
+def unlock_readings(folder) -> dict:
+    """unlock_pdf over every PDF directly in a folder; {name: status} for those touched."""
+    folder = Path(folder)
+    if not folder.is_dir():
+        return {}
+    out = {}
+    for f in sorted(folder.iterdir()):
+        if f.is_file() and f.suffix.lower() == ".pdf":
+            r = unlock_pdf(f)
+            if r:
+                out[f.name] = r
+    return out
 
 
 def same_content(a: Path, b: Path) -> bool:
