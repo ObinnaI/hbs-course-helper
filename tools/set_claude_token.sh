@@ -13,9 +13,13 @@ script -q "$f" claude setup-token || true
 t=$(python3 - "$f" <<'PY'
 import re, sys
 raw = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
-txt = re.sub(r"\x1b\[[^A-Za-z]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Z0-9]|\x1b[=>]", "", raw)
-txt = txt.replace("\r", "")
-m = re.search(r"sk-ant-oat01-[A-Za-z0-9_-]+(?:[ \t]*\n[ \t]*([A-Za-z0-9_-]+)[ \t]*(?=\n))?", txt)
+# Claude Code draws the token with cursor moves rather than newlines: each line
+# ends in a carriage return followed by "cursor down" (ESC [ n B). Turn both into
+# line breaks before stripping the remaining escape sequences, or the two halves
+# of the token (and the text after it) run together.
+txt = re.sub(r"\x1b\[\d*B|\r", "\n", raw)
+txt = re.sub(r"\x1b\[[^A-Za-z]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Z0-9]|\x1b[=>]", "", txt)
+m = re.search(r"sk-ant-oat01-[A-Za-z0-9_-]+(?:[ \t]*\n(?:[ \t]*\n){0,3}[ \t]*([A-Za-z0-9_-]+)[ \t]*(?=\n))?", txt)
 if m:
     print(re.sub(r"\s+", "", m.group(0)))
 PY
