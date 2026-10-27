@@ -318,3 +318,33 @@ def test_notes_skip_a_locked_reading_with_a_stub(notes_env, monkeypatch, capsys)
     assert sent == ["Open note.pdf"]
     assert (d / "Locked case (skipped).txt").read_text().startswith("NOT included")
     assert "password-protected" in capsys.readouterr().out
+
+
+def test_pdf_text_goes_on_stdin_beside_the_read_instruction(notes_env, monkeypatch):
+    seen = {}
+    def fake(session_dir, master, instruction, context, model_name, cfg):
+        seen.update(instruction=instruction, context=context); return "# Body\n", {}
+    monkeypatch.setattr(nb, "generate_with_claude_code", fake)
+    monkeypatch.setattr(cr, "pdf_text", lambda p: "[page 1]\nViktor Novak nodded." if p.name == "260916 Pave.pdf" else "")
+    cr.generate_notes(_case_session(notes_env, 72))
+    assert "=== READINGS ON DISK" in seen["context"] and "- 260916 Pave.pdf (12 pages)" in seen["context"]
+    assert "=== READING TEXT: 260916 Pave.pdf (12 pages" in seen["context"]
+    assert "Viktor Novak nodded." in seen["context"]
+    assert "READING TEXT" in seen["instruction"]
+
+
+def test_sheet_that_claims_unreadable_is_flagged(notes_env, monkeypatch, capsys):
+    monkeypatch.setattr(nb, "generate_with_claude_code",
+                        lambda *a: ("# Cheat Sheet\n\nThe case PDF could not be machine-read in this environment.\n", {}))
+    monkeypatch.setattr(cr, "pdf_text", lambda p: "")
+    cr.generate_notes(_case_session(notes_env, 72))
+    md = (notes_env / ".Cheat Sheet - MFS.md").read_text()
+    assert "Check this sheet against the case" in md
+    assert "could not be machine-read" in capsys.readouterr().out
+    assert cr.claims_unreadable("All page citations refer to the case.") is None
+
+
+def test_pdf_text_reads_real_pdfs(tmp_path):
+    from test_unlock_pdf import _pdf
+    assert cr.pdf_text(_pdf(tmp_path / "blank.pdf", user_pw="")) == ""      # no text layer
+    assert cr.pdf_text(tmp_path / "missing.pdf") == ""

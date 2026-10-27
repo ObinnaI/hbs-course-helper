@@ -1348,7 +1348,19 @@ def _generate_via_claude_code(session: dict, session_dir: Path, master: str,
                 skipped.append(f.name)
                 continue
             on_disk.append(f"- {f.name} ({pages} pages)")
-            print(f"    + {f.name} ({pages}p, read by the model)")
+            # The model is told to Read the PDF, and gets its text on stdin as
+            # well: when the Read tool cannot open a file (a protected PDF, a
+            # missing library on the runner) the sheet was being written
+            # around the case while claiming the file was unreadable.
+            text = pdf_text(f)
+            if text:
+                if len(text) > PDF_TEXT_CHARS:
+                    text = text[:PDF_TEXT_CHARS] + "\n[... truncated; the rest is in the PDF ...]"
+                inline.append(f"=== READING TEXT: {f.name} ({pages} pages; extracted from the PDF, "
+                              f"which is also in the folder for the exhibits) ===\n{text}")
+                print(f"    + {f.name} ({pages}p, read by the model; {len(text):,} chars of text on stdin)")
+            else:
+                print(f"    + {f.name} ({pages}p, read by the model; no text layer)")
         else:
             text = ai_config.extract_text(f)
             if not text.strip():
@@ -1372,14 +1384,58 @@ def _generate_via_claude_code(session: dict, session_dir: Path, master: str,
     instruction = ("Produce the cheat sheet for this class session exactly as the system "
                    "instructions describe. The Canvas posting, extracted notes and course "
                    "context are on stdin; the PDFs listed there are in the current folder — "
-                   "read every one in full before writing. Output only the final Markdown.")
+                   "read every one in full before writing, for the exhibits and page numbers. "
+                   "Each PDF's text is also on stdin under READING TEXT, so the case is never "
+                   "unavailable: if the Read tool cannot open a file, work from that text and "
+                   "say nothing about tooling. Output only the final Markdown.")
     model_name = notes_backend.model(cfg)
     print(f"    Calling Claude Code ({model_name})...", flush=True)
     result, usage = notes_backend.generate_with_claude_code(
         session_dir, master, instruction, context, model_name, cfg)
     used = notes_backend.describe_usage(usage)
     print(f"    Done{' (' + used + ')' if used else ''}")
+    claim = claims_unreadable(result or "")
+    if claim:
+        print(f"    ⚠ The sheet says a reading could not be read (\"{claim}\") although its text "
+              "was supplied — check the readings; the sheet is kept with a warning at the top")
+        result = ("> ⚠ **Check this sheet against the case.** The model reported that it could "
+                  "not read a file even though the text was supplied; some case details may "
+                  "be missing or invented.\n\n" + result)
     return result
+
+
+PDF_TEXT_CHARS = 300_000     # ~75k tokens; a 150-page case is about 350k chars
+
+
+def pdf_text(path: Path) -> str:
+    """Text layer of a PDF with page markers, or "" when there is none (scans)."""
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(str(path))
+        if reader.is_encrypted and not reader.decrypt(""):
+            return ""
+        parts = []
+        for i, page in enumerate(reader.pages, 1):
+            t = (page.extract_text() or "").strip()
+            if t:
+                parts.append(f"[page {i}]\n{t}")
+        text = "\n\n".join(parts)
+        return text if len(text) > 200 else ""
+    except Exception as e:
+        print(f"    (could not extract text from {path.name}: {str(e)[:60]})")
+        return ""
+
+
+_UNREADABLE_RE = re.compile(
+    r"(could not be (machine-)?read|could not (open|read|extract)|unable to (open|read|extract)|"
+    r"no PDF (tooling|text-extraction)|not machine-read|cannot be read in this environment|"
+    r"encrypted PDF|RC4-encrypted|Flate-compressed streams)", re.I)
+
+
+def claims_unreadable(text: str) -> "str | None":
+    """The phrase, if the sheet says it could not read a reading."""
+    m = _UNREADABLE_RE.search(text[:6000])
+    return m.group(0) if m else None
 
 
 def course_context(session: dict, session_dir: Path) -> str:
