@@ -65,8 +65,14 @@ def course_codes(abbrev: str, info: dict, config: dict) -> list:
     return sorted(codes, key=len, reverse=True)
 
 
-def course_for(subject: str, body: str, courses: dict, config: dict) -> "str | None":
-    """The course an email belongs to, by its code in the subject, else its name in the text."""
+def course_for(subject: str, body: str, courses: dict, config: dict,
+               sender: str = "") -> "str | None":
+    """
+    The course an email belongs to: by its code in the subject, else by the
+    sender (email_senders in canvas_config.json maps an address to a course:
+    a course's faculty support sends pairings and nudges without any code),
+    else by the course name in the text.
+    """
     subj = (subject or "").upper()
     best = None
     for abbrev, info in courses.items():
@@ -76,6 +82,10 @@ def course_for(subject: str, body: str, courses: dict, config: dict) -> "str | N
                     best = (len(code), abbrev)
     if best:
         return best[1]
+    addr = (re.search(r"[\w.+-]+@[\w.-]+", sender or "") or [None])[0]
+    for who, abbrev in (config.get("email_senders") or {}).items():
+        if addr and who.lower() == addr.lower() and abbrev in courses:
+            return abbrev
     text = _norm(subject + " " + (body or "")[:1500])
     for abbrev, info in courses.items():
         name = _norm(info.get("full_name", ""))
@@ -91,13 +101,19 @@ def subject_title(subject: str) -> str:
     return (m.group(1) if m else re.sub(r"^[A-Z]{2,8}[-\s]?\d*\s*:?", "", subject or "")).strip()
 
 
+# Words a posting title shares with every other posting, so they say nothing
+# about which class an email is for ("Windham – Submit your negotiations").
+_NOISE_WORDS = {"negotiation", "negotiations", "debrief", "quiz", "class", "submit",
+                "your", "with", "from", "this", "that", "please", "session"}
+
+
 def _score(posting_title: str, title: str, body: str) -> float:
     pt = _norm(posting_title)
     if not pt:
         return 0.0
     ratio = difflib.SequenceMatcher(None, pt, _norm(title)).ratio()
     # "Viking Investments" vs "Viking Investment Negotiation": shared leading words count.
-    words = [w for w in pt.split() if len(w) > 3 and w not in ("negotiation", "debrief", "quiz", "class")]
+    words = [w for w in pt.split() if len(w) > 3 and w not in _NOISE_WORDS]
     if words:
         hay_title, hay_body = _norm(title), _norm(body)
         in_title = sum(w in hay_title or w.rstrip("s") in hay_title for w in words) / len(words)
@@ -166,9 +182,10 @@ def route_item(item: Path, courses: dict, config: dict, cr, dry_run: bool = Fals
     if sent.tzinfo is None:
         sent = sent.replace(tzinfo=timezone.utc)
 
-    abbrev = course_for(subject, body, courses, config)
+    abbrev = course_for(subject, body, courses, config, sender=msg.get("from", ""))
     if not abbrev:
-        return False, f"no course recognised in {subject!r} (add its code to email_codes in canvas_config.json)"
+        return False, (f"no course recognised in {subject!r} (add its code to email_codes, "
+                       "or the sender to email_senders, in canvas_config.json)")
     info = courses[abbrev]
     days = _upcoming_days(cr, info["canvas_id"], sent)
     hit = session_for(subject_title(subject), body, sent, days)

@@ -166,3 +166,51 @@ if [ -x "$CODE/.venv/bin/python" ] && need_podcasts; then
         sync_out
     fi
 fi
+
+# ── 5. keep the cloud's NotebookLM login fresh ───────────────────────────────
+# Google's sign-in cookie lasts about a week, so the NOTEBOOKLM_AUTH_JSON secret
+# the cloud runs with goes stale weekly. This Mac has its own NotebookLM login
+# (notebooklm login, once). When the cloud reports its login failed, or the
+# secret is older than MIRROR_NLM_MAX_AGE_DAYS (5), refresh this Mac's login
+# (a non-passive check rotates the cookie) and, if it is valid, upload it as
+# the secret with gh. Needs `gh auth login` on this Mac; nothing is uploaded
+# unless the local login passes its own check, and at most once per 12 h.
+NLM_STORAGE="$(envval NOTEBOOKLM_STORAGE "$HOME/.notebooklm/profiles/default/storage_state.json")"
+NLM_MAX_AGE="$(envval MIRROR_NLM_MAX_AGE_DAYS 5)"
+NLM_MARK="$STATE/nlm_secret_uploaded"
+REPO_SLUG="$(git remote get-url origin 2>/dev/null | sed -E 's#^(https://github.com/|git@github.com:)##; s#\.git$##')"
+nlm_upload_needed() {   # 0 when the cloud needs a fresh cookie and we have not just sent one
+    [ -n "$REPO_SLUG" ] && command -v gh >/dev/null || return 1
+    if [ -f "$NLM_MARK" ] && [ "$(( $(date +%s) - $(stat -f %m "$NLM_MARK") ))" -lt 43200 ]; then return 1; fi
+    "$CODE/.venv/bin/python" - "$STATUS" "$NLM_MAX_AGE" "$(gh -R "$REPO_SLUG" secret list --json name,updatedAt 2>/dev/null)" <<'PY'
+import json, sys, datetime as d
+status, max_age, secrets = sys.argv[1], float(sys.argv[2]), sys.argv[3]
+now = d.datetime.now(d.timezone.utc)
+try:
+    s = json.load(open(status))
+    if not s.get("auth_ok") and now - d.datetime.fromisoformat(s["checked_at"]) < d.timedelta(hours=30):
+        sys.exit(0)                      # the cloud said its login failed
+except Exception:
+    pass
+try:
+    for sec in json.loads(secrets or "[]"):
+        if sec["name"] == "NOTEBOOKLM_AUTH_JSON":
+            age = now - d.datetime.fromisoformat(sec["updatedAt"].replace("Z", "+00:00"))
+            sys.exit(0 if age > d.timedelta(days=max_age) else 1)
+except Exception:
+    sys.exit(1)                          # could not read the secret list: do nothing
+sys.exit(0)                              # no such secret yet
+PY
+}
+if [ -x "$CODE/.venv/bin/notebooklm" ] && [ -f "$NLM_STORAGE" ] && nlm_upload_needed; then
+    if "$CODE/.venv/bin/notebooklm" auth check --test >/dev/null 2>&1; then
+        if gh -R "$REPO_SLUG" secret set NOTEBOOKLM_AUTH_JSON < "$NLM_STORAGE" >/dev/null 2>&1; then
+            touch "$NLM_MARK"
+            echo "$LOG_PREFIX uploaded this Mac's NotebookLM login as the cloud secret NOTEBOOKLM_AUTH_JSON"
+        else
+            echo "$LOG_PREFIX could not upload the NotebookLM login (is gh logged in? gh auth status)"
+        fi
+    else
+        echo "$LOG_PREFIX this Mac's NotebookLM login is not valid either — run: $CODE/.venv/bin/notebooklm login"
+    fi
+fi

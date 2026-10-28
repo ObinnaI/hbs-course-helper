@@ -65,6 +65,21 @@ def test_course_from_subject_code_and_name(world):
     assert inbox.course_for("Role info", "for your Negotiation class", courses, {}) == "NEG"
     assert inbox.course_for("Lunch on Friday?", "see you", courses, {}) is None
     assert inbox.course_for("XYZ-1: role", "", courses, {"email_codes": {"MP": ["XYZ"]}}) == "MP"
+    # Faculty support sends pairings and nudges with no course code in the subject.
+    cfg = {"email_senders": {"tcolsonleaning@hbs.edu": "NEG"}}
+    assert inbox.course_for("04 Pairings for Windham", "", courses, cfg,
+                            sender='"Colson Leaning, Tara" <TColsonLeaning@hbs.edu>') == "NEG"
+    assert inbox.course_for("Lunch on Friday?", "see you", courses, cfg, sender="x@y.z") is None
+
+
+def test_pairings_email_goes_to_the_negotiation_day_not_the_debrief():
+    # "Windham – Submit your negotiations" (Oct 28) vs "Windham Debrief + QUIZ 5"
+    # (Oct 30): only "windham" tells them apart, so the filler words must not count.
+    title = "04 Pairings for Windham Negotiation"
+    body = "You have been assigned the role of Cooperative Savings Bank for the Windham negotiation."
+    first = inbox._score("Windham – Submit your negotiations", title, body)
+    debrief = inbox._score("Windham Debrief + QUIZ 5", title, body) - 0.2
+    assert first >= inbox.MATCH_THRESHOLD and first > debrief
 
 
 def test_subject_title():

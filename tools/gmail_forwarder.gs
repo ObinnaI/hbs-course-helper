@@ -23,6 +23,9 @@
 
 const QUERIES = [
   'subject:"CONFIDENTIAL ROLE INFORMATION" newer_than:10d',
+  // Pairings, nudges and directives come from faculty support with no course
+  // code in the subject; inbox.py maps the sender to the course (email_senders).
+  'from:hbs.edu subject:(pairings OR nudge OR directive OR counterpart OR "role information" OR "role link") newer_than:10d',
 ];
 const LABEL = 'hbs-forwarded';
 const MAX_ATTACHMENT_BYTES = 40 * 1024 * 1024;
