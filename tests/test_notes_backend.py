@@ -348,3 +348,40 @@ def test_pdf_text_reads_real_pdfs(tmp_path):
     from test_unlock_pdf import _pdf
     assert cr.pdf_text(_pdf(tmp_path / "blank.pdf", user_pw="")) == ""      # no text layer
     assert cr.pdf_text(tmp_path / "missing.pdf") == ""
+
+
+def test_rebuilt_sheet_keeps_the_podcast_record(notes_env, monkeypatch):
+    # The podcast pass records what the episode was made from in .notes_meta.json.
+    # A regenerated sheet must not wipe it: an episode with no record is never
+    # stale, so a podcast built on a case-less sheet would outlive the fix.
+    import podcast_gen as pg
+    pg.record_sources(notes_env, "8ee4cdbcd7", 40.5)
+    monkeypatch.setattr(nb, "generate_with_claude_code",
+                        lambda *a: ("# Cheat Sheet\n\nAll page citations refer to the case.\n", {}))
+    cr.generate_notes(_case_session(notes_env, 72))
+    meta = json.loads((notes_env / ".notes_meta.json").read_text())
+    assert meta["podcast_sources"] == "8ee4cdbcd7" and meta["podcast_minutes"] == 40.5
+    assert meta["notes_file"] == "Cheat Sheet - MFS.docx"
+
+
+def test_canvas_403_is_reported_once_per_course(monkeypatch, capsys):
+    from urllib.error import HTTPError, URLError
+    monkeypatch.setenv("CANVAS_API_TOKEN", "t")
+    monkeypatch.setattr(cr, "CANVAS_BASE", "https://canvas.test/api/v1")
+    monkeypatch.setattr(cr, "_NO_ACCESS", set())
+    def forbidden(req, timeout=30):
+        raise HTTPError(req.full_url, 403, "Forbidden", {}, None)
+    monkeypatch.setattr(cr._opener, "open", forbidden)
+    assert cr.canvas_get("courses/17040/assignments") == []
+    assert cr.canvas_get("courses/17040/modules") == []
+    assert cr.canvas_get("courses/99/modules") == []
+    out = capsys.readouterr().out
+    assert out.count("no access to course 17040") == 1
+    assert out.count("no access to course 99") == 1
+    assert "Network error" not in out
+
+    def offline(req, timeout=30):
+        raise URLError("nodename nor servname provided")
+    monkeypatch.setattr(cr._opener, "open", offline)
+    assert cr.canvas_get("courses/1/assignments") == []
+    assert "Network error, skipping this request" in capsys.readouterr().out

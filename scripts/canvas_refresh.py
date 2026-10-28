@@ -125,6 +125,7 @@ class _StripAuthOnRedirect(HTTPRedirectHandler):
         return new_req
 
 _opener = build_opener(_StripAuthOnRedirect())
+_NO_ACCESS: set = set()   # (status, course id) already reported this run
 
 def canvas_get(path: str, params: dict | None = None) -> list | dict:
     token = require("CANVAS_API_TOKEN")
@@ -136,20 +137,28 @@ def canvas_get(path: str, params: dict | None = None) -> list | dict:
         req = Request(url, headers={"Authorization": f"Bearer {token}"})
         try:
             resp = _opener.open(req, timeout=30)
+        except HTTPError as e:
+            # (Before URLError: HTTPError is a subclass of it, and a 403 used to
+            # be reported as "Network error ... Forbidden".)
+            if e.code in (401, 403):
+                # Distinct from a transient failure: the token cannot read this
+                # course at all. Usually an enrolment change or a revoked token,
+                # not something a retry or a code change will fix. Said once per
+                # course per run; a concluded course is asked about many times.
+                course = re.search(r"/courses/(\d+)", url)
+                key = (e.code, course.group(1) if course else url)
+                if key not in _NO_ACCESS:
+                    _NO_ACCESS.add(key)
+                    print(f"    HTTP {e.code} — no access to "
+                          f"{'course ' + key[1] if course else url} "
+                          f"(enrolment ended, or token revoked); its requests are skipped this run")
+            else:
+                print(f"    HTTP {e.code}: {url}")
+            return []
         except URLError as e:
             # No network (asleep laptop, captive wifi). Previously uncaught, so
             # one unreachable moment ended the whole scheduled run in a traceback.
             print(f"    Network error, skipping this request: {e.reason}")
-            return []
-        except HTTPError as e:
-            if e.code in (401, 403):
-                # Distinct from a transient failure: the token cannot read this
-                # course at all. Usually an enrolment change or a revoked token,
-                # not something a retry or a code change will fix.
-                print(f"    HTTP {e.code} — no access to this course "
-                      f"(enrolment ended, or token revoked): {url}")
-            else:
-                print(f"    HTTP {e.code}: {url}")
             return []
         data = json.loads(resp.read())
         if isinstance(data, list):
@@ -1278,6 +1287,7 @@ def _finish_notes(session: dict, session_dir: Path, output_file: Path, md_file: 
 
     skipped_names = {entry.split(" (")[0] for entry in skipped}
     included = [f.name for f in reading_files if f.name not in skipped_names]
+    previous_meta = _read_notes_meta(session_dir)
 
     metadata: dict[str, str] = {
         "Generated": datetime.now(tz=BOSTON).strftime("%Y-%m-%d %H:%M"),
@@ -1308,7 +1318,7 @@ def _finish_notes(session: dict, session_dir: Path, output_file: Path, md_file: 
 
     # Record what these Notes were generated from, so the next run can tell
     # whether anything has changed without trusting file timestamps.
-    _write_notes_meta(session_dir, {
+    meta = {
         "assignments":       session_hashes(session),
         "prompt_hash":       prompt_hash(abbrev),
         "readings":          readings_fingerprint(session_dir),
@@ -1318,7 +1328,16 @@ def _finish_notes(session: dict, session_dir: Path, output_file: Path, md_file: 
         "readings_included": included,
         "skipped":           skipped,
         "backend":           notes_backend.backend(cfg),
-    })
+    }
+    # Keep what the podcast pass recorded about the existing episode. A rebuilt
+    # sheet used to wipe it, and an episode with no record is never considered
+    # stale - so a podcast made from a case-less sheet outlived the fix to the
+    # sheet (Kora Capital, Oct 2026). With the record kept, the next podcast
+    # pass sees the fingerprint no longer matches and rebuilds the episode.
+    for key in ("podcast_sources", "podcast_minutes", "flashcards_sources"):
+        if key in previous_meta:
+            meta[key] = previous_meta[key]
+    _write_notes_meta(session_dir, meta)
     _NOTES_MADE += 1
     print(f"    ✅ Generated: {output_file.name}")
 
