@@ -43,6 +43,8 @@ QUIZ_RE = re.compile(r"\bquiz\s*#?\s*(\d+)?", re.IGNORECASE)
 HORIZON_DAYS = 7
 MATERIAL_EXTS = {".pdf", ".docx", ".pptx", ".ppt", ".doc", ".xlsx", ".xls"}
 META = ".quiz_meta.json"
+DECK_TEXT_CHARS = 120_000           # per in-scope PDF, piped on stdin
+EARLIER_DECK_TEXT_CHARS = 30_000    # per earlier deck (Quiz-answers slides, untested terms)
 _CASE_NOISE_RE = re.compile(
     r"\+\s*quiz\s*#?\s*\d*|\b(debrief|negotiation|day\s*\d+|part\s*\d+)\b|\b(i{1,3}|iv|v)\b\s*$", re.IGNORECASE)
 
@@ -257,6 +259,28 @@ def _context(cr, abbrev, course_name, n, quiz, course_folder, groups, earlier, p
     parts.append("=== FILES TO READ (relative to the working directory; use the Read tool) ===\n"
                  + ("\n".join(files) or "(no PDFs)"))
 
+    # The runner's Read tool has failed on ordinary PDFs (the Oct 28 Quiz 5
+    # guide admitted it could not open the decks and carried old quotations
+    # forward). Pipe each deck's text too, so the wording is always in front
+    # of the model; the PDF stays available for the figures.
+    for src, rel, is_deck in plan:
+        if src.suffix.lower() != ".pdf":
+            continue
+        text = cr.pdf_text(src)
+        if not text:
+            continue
+        if len(text) > DECK_TEXT_CHARS:
+            text = text[:DECK_TEXT_CHARS] + "\n[... truncated; the rest is in the PDF ...]"
+        kind = "DECK" if is_deck else "READING"
+        parts.append(f"=== {kind} TEXT: {src.name} ({cr.pdf_page_count(src)} pages; extracted from the PDF, "
+                     f"which is also on disk; '[page N]' marks slide N) ===\n{text}")
+    for name, ordinals in sorted(decks.items()):
+        p = shelf / name
+        if ordinals & earlier_ord and p.exists() and p.suffix.lower() == ".pdf":
+            text = cr.pdf_text(p)
+            if text:
+                parts.append(f"=== EARLIER DECK TEXT: {p.name} ===\n{text[:EARLIER_DECK_TEXT_CHARS]}")
+
     for g in groups:
         for d in g["days"]:
             sdir = canvas_common.find_session_dir(course_folder, d["date_str"])
@@ -361,6 +385,14 @@ def build(abbrev: str, n: int, force: bool = False, dry_run: bool = False,
     except notes_backend.NotesError as e:
         print(f"    ✗ Study guide not generated: {e}")
         return docx if docx.exists() else None
+
+    # A guide that says it could not open the decks is not a study guide; keep
+    # it (the next run rebuilds) but say so at the top and in the log.
+    claim = cr.claims_unreadable(text)
+    if claim:
+        print(f"    ⚠ The guide says a source could not be read: \"{claim}\" — check it against the decks")
+        text = ("> ⚠ **Check this guide against the decks.** It says a source could not be read, so some "
+                "quotations may be carried forward rather than taken from the slides.\n\n" + text)
 
     generated = datetime.now(tz=cr.BOSTON).strftime("%Y-%m-%d %H:%M")
     metadata = {"Generated": generated, "Course": course_name,

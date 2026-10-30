@@ -109,6 +109,8 @@ def test_build_makes_the_folder_and_guide(course, monkeypatch, capsys):
         asked.update(cwd=cwd, system=system, context=context)
         return "# LTV Quiz 3 Study Guide\n\n## Key terms\n\n| Term | Definition |\n|---|---|\n| BATNA | best alternative |\n"
     monkeypatch.setattr(quiz, "_ask", fake_ask)
+    import canvas_refresh as cr
+    monkeypatch.setattr(cr, "pdf_text", lambda p: f"[page 1]\nslide text of {p.name}")
     out = quiz.build("LTV", 3)
     q = course / "Quiz 3"
     assert out == q / "Launching Tech Ventures Quiz 3 Study Guide.docx" and out.exists()
@@ -128,6 +130,10 @@ def test_build_makes_the_folder_and_guide(course, monkeypatch, capsys):
     assert "Course Materials/2025_Win As Much As You Can.pdf (12 pages) — earlier deck" in ctx
     assert "=== CHEAT SHEET: Moms.com II + QUIZ 2 ===" in ctx and "contingent contracts" in ctx
     assert "- Sep 24: Moms.com I" in ctx
+    # Each deck's text rides along on stdin, so the model never depends on its PDF reader.
+    assert "=== DECK TEXT: 2026_fall_moms_2_04.pdf (12 pages" in ctx and "slide text of 2026_fall_moms_2_04.pdf" in ctx
+    assert "=== READING TEXT: Betting on the Future.pdf" in ctx
+    assert "=== EARLIER DECK TEXT: 2025_Win As Much As You Can.pdf ===" in ctx
 
     # Nothing changed → no second call.
     monkeypatch.setattr(quiz, "_ask", lambda *a: pytest.fail("must not regenerate"))
@@ -219,3 +225,11 @@ def test_podcast_then_flashcards_once(course, monkeypatch):
     (q / "Quiz 3 Flashcards.html").unlink()                  # cards missing: only the cards are made
     quiz.podcast("LTV", 3)
     assert len(renders) == 1 and len(cards) == 2
+
+
+def test_guide_that_claims_unreadable_decks_is_flagged(course, monkeypatch, capsys):
+    monkeypatch.setattr(quiz, "_ask", lambda *a: "# LTV Quiz 3 Study Guide\n\nPDF tooling is not installed, so the decks could not be read.\n")
+    out = quiz.build("LTV", 3)
+    md = (course / "Quiz 3" / ".Launching Tech Ventures Quiz 3 Study Guide.md").read_text()
+    assert "Check this guide against the decks" in md
+    assert "could not be read" in capsys.readouterr().out
