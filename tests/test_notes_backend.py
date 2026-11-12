@@ -385,3 +385,41 @@ def test_canvas_403_is_reported_once_per_course(monkeypatch, capsys):
     monkeypatch.setattr(cr._opener, "open", offline)
     assert cr.canvas_get("courses/1/assignments") == []
     assert "Network error, skipping this request" in capsys.readouterr().out
+
+
+def test_offer_onepager_is_split_into_its_own_file(notes_env, monkeypatch):
+    sheet = ("# Cheat Sheet: MFS — Buyer\n\n## My numbers\n\n| BATNA | 10 |\n|---|---|\n\n"
+             "# Offer One-Pager: MFS — Buyer\n\n**Our proposal**\n\n| Term | Proposed |\n|---|---|\n| Price | $42 |\n\n"
+             "Next step: let's confirm the price first.\n")
+    monkeypatch.setattr(nb, "generate_with_claude_code", lambda *a: (sheet, {}))
+    cr.generate_notes(_case_session(notes_env, 72))
+    md = (notes_env / ".Cheat Sheet - MFS.md").read_text()
+    assert "Our proposal" not in md and "My numbers" in md
+    page = notes_env / "Offer One-Pager - MFS.docx"
+    assert page.exists()
+    from docx import Document
+    text = "\n".join(p.text for p in Document(page).paragraphs)
+    assert "MFS — Buyer" in text and "confirm the price" in text
+    import canvas_common
+    assert canvas_common.is_generated_file(page.name)
+    assert page not in cr._reading_files(notes_env)     # never counts as a reading
+
+
+def test_missing_emailed_readings_raise_an_alert_near_class(notes_env, monkeypatch):
+    calls = []
+    import todoist_sync
+    monkeypatch.setattr(todoist_sync, "alert", lambda key, active, content, description="", client=None: calls.append((key, active)))
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    d = notes_env.parent / "260924 Class 7 - MFS"; d.mkdir()
+    s = _case_session(d, 72)                   # readings expected by the posting, none on disk
+    cr.generate_notes(s)
+    assert calls == [("readings:260924 LTV", True)]
+    # A reading arrives → the alert closes.
+    (d / "260924 Role sheet.pdf").write_bytes(b"%PDF role")
+    monkeypatch.setattr(cr, "substantive_readings", lambda files: [f for f in files if f.suffix == ".pdf"])
+    monkeypatch.setattr(nb, "generate_with_claude_code", lambda *a: ("# ok\n", {}))
+    calls.clear(); cr.generate_notes(s)
+    assert calls == [("readings:260924 LTV", False)]
+    # Not in the cloud → never touches Todoist.
+    monkeypatch.delenv("GITHUB_ACTIONS"); calls.clear(); cr.generate_notes(s)
+    assert calls == []

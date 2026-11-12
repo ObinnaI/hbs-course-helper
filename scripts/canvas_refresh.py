@@ -1000,6 +1000,38 @@ def readings_missing(session: dict, session_dir: Path) -> "str | None":
     return "the posting points at readings but none is on disk yet"
 
 
+READINGS_ALERT_HOURS = 96   # raise the alert once class is within four days
+
+
+def _readings_alert(session: dict, missing: "str | None") -> None:
+    """
+    A Todoist task when a class is close and the readings its posting promises
+    (usually a role sheet sent by email) have not arrived: the pipeline would
+    otherwise build the sheet from the posting alone and wait silently for a
+    podcast, which is how three negotiations in a row went unprepared. Closed
+    as soon as a reading is on disk. Cloud runs only, like the login alerts.
+    """
+    if os.environ.get("GITHUB_ACTIONS") != "true" or not readings_expected(_session_assignments(session)):
+        return
+    hours = _hours_until(session)
+    if hours is None or hours > READINGS_ALERT_HOURS or hours < -24:
+        return
+    title = canvas_common.session_title(_session_assignments(session)) or session["date_str"]
+    key = f"readings:{session['date_str']} {session['abbrev']}"
+    try:
+        import todoist_sync
+        todoist_sync.alert(
+            key, bool(missing),
+            f"Role sheet / readings for {title} ({session['abbrev']} {session['date_str']}) have not arrived",
+            "The Canvas posting says the materials come by email, but nothing is on disk yet, so the "
+            "cheat sheet is built from the posting alone and the podcast waits.\n"
+            "Fix: find the email (CONFIDENTIAL ROLE INFORMATION / pairings) and either let the inbox fetch "
+            "pick it up (GMAIL_APP_PASSWORD secret), or save the PDF into the class folder in iCloud. "
+            "The Mac mirror pushes it up and starts a cloud run; the sheet and podcast rebuild within the hour.")
+    except Exception as e:
+        print(f"    ⚠ readings alert: {e}")
+
+
 def _hours_until(session: dict) -> "float | None":
     due = session.get("due_dt")
     if not due:
@@ -1200,6 +1232,7 @@ def generate_notes(session: dict):
 
     banner = ""
     missing = readings_missing(session, session_dir)
+    _readings_alert(session, missing)
     if missing:
         hours = _hours_until(session)
         if hours is not None and hours > READINGS_GRACE_HOURS:
@@ -1311,6 +1344,17 @@ def _finish_notes(session: dict, session_dir: Path, output_file: Path, md_file: 
             print(f"    ✅ Calculator: {calc_file.name}")
         except Exception as e:
             print(f"    ⚠ Calculator not written ({e})")
+    # ... and with the offer one-pager the student hands to the counterpart,
+    # split out into its own Word file so it can be sent as is.
+    import onepager
+    result, page = onepager.extract(result)
+    if page:
+        page_file = session_dir / onepager.filename(canvas_common.session_title(assignments))
+        try:
+            onepager.build(page, page_file, {"Generated": metadata["Generated"], "Course": metadata["Course"]})
+            print(f"    ✅ Offer one-pager: {page_file.name}")
+        except Exception as e:
+            print(f"    ⚠ Offer one-pager not written ({e})")
 
     title = notes_heading(date_str, abbrev)
     write_markdown(md_file, title, metadata, result)

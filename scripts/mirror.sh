@@ -96,6 +96,21 @@ while IFS= read -r rel; do
     fi
 done <<< "$(trackers)"
 
+# ── 1a. emailed materials straight from Gmail (optional) ─────────────────────
+# With GMAIL_USER and GMAIL_APP_PASSWORD in the code repo's .env, every tick
+# pulls new role-sheet emails into inbox/ (read-only IMAP; see inbox_fetch.py).
+# The cloud job does the same with its secrets; this just shortens the wait to
+# the next half hour, and the push below starts a cloud run to file them.
+FETCHED=0
+if [ -n "$(envval GMAIL_APP_PASSWORD "")" ] && [ -x "$CODE/.venv/bin/python" ]; then
+    COURSEWORK_ROOT="$CLONE" CANVAS_CONFIG_FILE="$CLONE/claude/canvas_config.json" \
+        "$CODE/.venv/bin/python" "$CODE/scripts/inbox_fetch.py" 2>&1 | grep -v 'nothing new' || true
+    git add -A inbox claude/inbox_state.json 2>/dev/null || true
+    if git commit -qm "inbox: emailed materials fetched on the Mac"; then
+        echo "$LOG_PREFIX committed emailed materials"; FETCHED=1
+    fi
+fi
+
 # ── 1b. files you added in the mirror folder → repo ──────────────────────────
 # New files inside class-day folders and the course materials shelf are
 # copied up (never overwriting, never deleting) so a PDF or sheet dropped in
@@ -112,7 +127,8 @@ if rsync -a --ignore-existing --prune-empty-dirs --max-size=95m \
         --exclude '*' \
         "$DEST/" "$CLONE/" 2>/dev/null; then
     git add -A
-    if git commit -qm "mirror: files added on the Mac"; then echo "$LOG_PREFIX committed files added on the Mac"; fi
+    ADDED=0
+    if git commit -qm "mirror: files added on the Mac"; then echo "$LOG_PREFIX committed files added on the Mac"; ADDED=1; fi
 fi
 
 # ── 2. pull, push ─────────────────────────────────────────────────────────────
@@ -123,6 +139,24 @@ if ! git pull --rebase -X theirs -q origin main; then
 fi
 if [ -n "$(git log --oneline origin/main..HEAD 2>/dev/null)" ]; then
     git push -q origin main && echo "$LOG_PREFIX pushed"
+fi
+
+# ── 2b. new material on a class day → start a cloud run now ──────────────────
+# A role sheet dropped into iCloud (or fetched from Gmail) at 7:46 for a 10:10
+# class used to wait for the nightly run. If this tick pushed new files, ask
+# GitHub to run the refresh now (sheet in ~15 min, podcast ~30 min later), at
+# most once every 90 minutes and never while a run is already going.
+DISPATCH_MARK="$STATE/dispatched"
+if [ "${ADDED:-0}" = 1 ] || [ "${FETCHED:-0}" = 1 ]; then
+    REPO_SLUG="${REPO_SLUG:-$(git remote get-url origin 2>/dev/null | sed -E 's#^(https://github.com/|git@github.com:)##; s#\.git$##')}"
+    recent=0
+    [ -f "$DISPATCH_MARK" ] && [ "$(( $(date +%s) - $(stat -f %m "$DISPATCH_MARK") ))" -lt 5400 ] && recent=1
+    if [ -n "$REPO_SLUG" ] && command -v gh >/dev/null && [ "$recent" = 0 ]; then
+        running="$(gh -R "$REPO_SLUG" run list --workflow=refresh.yml --status in_progress --limit 1 --json databaseId --jq 'length' 2>/dev/null || echo 0)"
+        if [ "${running:-0}" = 0 ] && gh -R "$REPO_SLUG" workflow run refresh.yml -f mode=daily -f podcasts=true >/dev/null 2>&1; then
+            touch "$DISPATCH_MARK"; echo "$LOG_PREFIX started a cloud run for the new material"
+        fi
+    fi
 fi
 
 # ── 3. clone → mirror ─────────────────────────────────────────────────────────

@@ -355,7 +355,8 @@ def is_generated_file(name: str) -> bool:
     would re-trigger the notes that produced them) or be sent to NotebookLM.
     """
     n = name or ""
-    return n.startswith("Calculator - ") and n.lower().endswith(".xlsx")
+    return ((n.startswith("Calculator - ") and n.lower().endswith(".xlsx"))
+            or (n.startswith("Offer One-Pager - ") and n.lower().endswith(".docx")))
 
 
 def notes_filename(date_str: str, abbrev: str, title: str = "") -> str:

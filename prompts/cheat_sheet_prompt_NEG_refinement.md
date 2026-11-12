@@ -54,7 +54,20 @@ A compact block to glance at in the room: reservation value, target, anchor, the
 ## How this connects to earlier classes
 Two or three lenses from the course brief applied to this negotiation, each in one or two sentences.
 
-Then, as the very last thing in the output, with nothing after it, the calculator specification described below.
+Then the offer one-pager described below, and after it, as the very last thing in the output, the calculator specification.
+
+### Offer one-pager (negotiation days only)
+
+After the sections above, write a level-one heading that is exactly `# Offer One-Pager: <case title> — <my role>` followed by a one-page document the student can hand or send to the counterpart as the opening proposal, to ground and anchor the conversation. It is split out of the cheat sheet into its own Word file, so it must stand alone and must be safe to show the other side:
+
+- Written to the counterpart, in the first person plural of my side ("we propose"), formal and confident. Nothing that is confidential to my role: no reservation value, no BATNA, no walk-away, no internal valuations, no scoring, no "estimate of their numbers". Only what I would say out loud.
+- **Our proposal** — the anchor package from the Opening section, every term stated precisely (numbers, dates, quantities, options), as a short pipe table of term and proposed value.
+- **Why these terms** — three to five one-line rationales that rest on objective standards or facts from the case (comparables, costs, precedent, the other side's own stated interests), one per line.
+- **What we need from you** — the two or three things we are asking the counterpart to confirm or provide.
+- **What we are open to discussing** — the issues where we signal flexibility (named, without saying how far), to invite trades.
+- **Next step** — one sentence proposing how to proceed in the session.
+
+Keep it under 300 words. Numbers must match the anchor package in the Opening section exactly.
 
 ### Calculator specification (negotiation days only)
 
