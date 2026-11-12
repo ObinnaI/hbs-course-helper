@@ -9,7 +9,8 @@
 #      last tick, copy it into the clone and commit — ratings entered on the
 #      Mac must reach the repo before the next weekly refresh rebuilds the sheet.
 #   1b. Copy up any NEW file in a class-day folder or on the materials shelf.
-#   2. git pull --rebase (the Mac's commit wins any conflict), push if ahead.
+#   2. git pull --rebase (a conflict is settled by git_resolve.py: state JSON
+#      merged, other files keep the Mac's copy), push if ahead.
 #   3. rsync clone → mirror folder. Never deletes, never overwrites a mirror
 #      file that is newer than the clone's copy.
 #   4. If the last cloud run reported a NotebookLM login problem with podcasts
@@ -132,7 +133,9 @@ if rsync -a --ignore-existing --prune-empty-dirs --max-size=95m \
 fi
 
 # ── 2. pull, push ─────────────────────────────────────────────────────────────
-if ! git pull --rebase -X theirs -q origin main; then
+# A conflict with a cloud run that pushed meanwhile is settled by git_resolve.py:
+# state JSON gets both sides' keys, any other file keeps this Mac's copy.
+if ! git pull --rebase -q origin main && ! python3 "$CODE/scripts/git_resolve.py"; then
     git rebase --abort 2>/dev/null || true
     echo "$LOG_PREFIX pull failed (offline?) — will retry next tick"
     exit 0
@@ -196,7 +199,8 @@ if [ -x "$CODE/.venv/bin/python" ] && need_podcasts; then
             --podcasts-only --podcast-days 7 --podcast-max "$PODCAST_MAX" || true
     git add -A
     if git commit -qm "podcasts: generated on the Mac"; then
-        git pull --rebase -X theirs -q origin main && git push -q origin main && echo "$LOG_PREFIX pushed podcasts"
+        { git pull --rebase -q origin main || python3 "$CODE/scripts/git_resolve.py"; } \
+            && git push -q origin main && echo "$LOG_PREFIX pushed podcasts"
         sync_out
     fi
 fi
