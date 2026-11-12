@@ -127,6 +127,19 @@ if rsync -a --ignore-existing --prune-empty-dirs --max-size=95m \
         --include '/*/*/Quiz */' --include '/*/*/Quiz */*[Ss]tud*' --include '/*/*/Quiz */.*[Ss]tud*' \
         --exclude '*' \
         "$DEST/" "$CLONE/" 2>/dev/null; then
+    # Don't resurrect what the cloud removed on purpose. Its organizer deletes a
+    # file that duplicates another one (the midterm decks sat in both the class
+    # day folder and Course Docs/Slides); the mirror never deletes, so the copy
+    # stays in iCloud and rsync brings it back as "new" every tick — a commit,
+    # a push and a cloud run each time, forever. An untracked file identical to
+    # the blob a past commit deleted at that path stays in iCloud and is skipped.
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        del="$(git log -1 --diff-filter=D --format=%H -- "$f" 2>/dev/null)" || true
+        [ -n "$del" ] || continue
+        old="$(git rev-parse -q --verify "$del^:$f" 2>/dev/null)" || true
+        [ -n "$old" ] && [ "$old" = "$(git hash-object -- "$f")" ] && rm -f -- "$f"
+    done < <(git ls-files --others --exclude-standard)
     git add -A
     ADDED=0
     if git commit -qm "mirror: files added on the Mac"; then echo "$LOG_PREFIX committed files added on the Mac"; ADDED=1; fi
