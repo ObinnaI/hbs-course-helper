@@ -138,12 +138,33 @@ def test_unmatched_stays_and_dry_run_moves_nothing(world, capsys):
     _item(root, "260928-f6", "NEG-04: CONFIDENTIAL ROLE INFORMATION: Viking Investments", files=[("v.pdf", b"%PDF")])
     assert inbox.route_inbox(dry_run=True) == 0
     out = capsys.readouterr().out
-    assert "would file → NEG 261001" in out and "no class in the next" in out and "no course recognised" in out
+    assert "would file → NEG 261001" in out and "no course recognised" in out
+    assert "next negotiation day (role email)" in out       # Zebra: a role email with no title match
     assert (root / "inbox" / "260928-f6" / "v.pdf").exists()
-    assert inbox.route_inbox() == 1
-    assert (root / "inbox" / "260928-d4").exists() and (root / "inbox" / "260928-e5").exists()
+    assert inbox.route_inbox() == 2
+    assert not (root / "inbox" / "260928-d4").exists() and (root / "inbox" / "260928-e5").exists()
 
 
 def test_no_inbox_is_quiet(world, capsys):
     assert inbox.route_inbox() == 0
     assert capsys.readouterr().out == ""
+
+
+def test_role_email_with_accented_title_goes_to_the_next_negotiation_day():
+    from datetime import datetime, timezone
+    days = {"261119": [{"name": "Thur. Nov 19 - Rio Negotiation"}],
+            "261120": [{"name": "Fri. Nov 20 - Rio Debrief + QUIZ 7"}],
+            "261124": [{"name": "Tue. Nov 24 - Zephyr Negotiation"}]}
+    sent = datetime(2026, 11, 16, 14, 30, tzinfo=timezone.utc)
+    assert inbox._norm("Río Curicó") == "rio curico"
+    # Accents stripped and three-letter words counted: "Rio" now matches on title.
+    assert inbox.session_for("Río Curicó", "", sent, days) == ("261119", "title match 0.95")
+    # No title match at all: a role email still goes to the next negotiation day within a
+    # week (never a debrief); an ordinary email does not.
+    assert inbox.session_for("Kalamazoo", "", sent, days, role=True) == ("261119", "next negotiation day (role email)")
+    assert inbox.session_for("Kalamazoo", "", sent, days, role=False) is None
+    late = datetime(2026, 11, 20, 12, 0, tzinfo=timezone.utc)
+    assert inbox.session_for("Kalamazoo", "", late, days, role=True) == ("261124", "next negotiation day (role email)")
+    early = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
+    assert inbox.session_for("Kalamazoo", "", early, days, role=True) is None   # more than a week out
+    assert inbox.ROLE_RE.search("NEG-04: CONFIDENTIAL ROLE INFORMATION: Río Curicó")

@@ -26,8 +26,10 @@ import asyncio
 import difflib
 import json
 import re
+import unicodedata
 import shutil
 import sys
+from zoneinfo import ZoneInfo
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -50,7 +52,13 @@ def state_file() -> Path:
 
 
 def _norm(s: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+    # "Río Curicó" and "Rio" must compare equal: strip accents before matching.
+    s = unicodedata.normalize("NFKD", s or "")
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+
+
+ROLE_RE = re.compile(r"confidential\s+role\s+information", re.I)
 
 
 # ── Which course ──────────────────────────────────────────────────────────────
@@ -113,7 +121,7 @@ def _score(posting_title: str, title: str, body: str) -> float:
         return 0.0
     ratio = difflib.SequenceMatcher(None, pt, _norm(title)).ratio()
     # "Viking Investments" vs "Viking Investment Negotiation": shared leading words count.
-    words = [w for w in pt.split() if len(w) > 3 and w not in _NOISE_WORDS]
+    words = [w for w in pt.split() if len(w) >= 3 and w not in _NOISE_WORDS]
     if words:
         hay_title, hay_body = _norm(title), _norm(body)
         in_title = sum(w in hay_title or w.rstrip("s") in hay_title for w in words) / len(words)
@@ -122,12 +130,29 @@ def _score(posting_title: str, title: str, body: str) -> float:
     return ratio
 
 
-def session_for(title: str, body: str, sent: datetime, days: dict) -> "tuple[str, str] | None":
+def session_for(title: str, body: str, sent: datetime, days: dict, role: bool = False) -> "tuple[str, str] | None":
     """
     (date_str, how) for the class day an email is about. `days` is
     {date_str: [postings]} for the course's upcoming class days. A negotiation
     is prepared on its first day, so a debrief posting never wins a tie.
+
+    A confidential-role email (role=True) that matches no title still goes to
+    the next negotiation day: the Río Curicó role sat unfiled for three nights
+    because "Río Curicó" shares one short word with "Rio Negotiation".
     """
+    hit = _session_by_title(title, body, days)
+    if hit or not role:
+        return hit
+    local = sent.astimezone(ZoneInfo("America/New_York"))
+    sent_ds, last_ds = local.strftime("%y%m%d"), (local + timedelta(days=7)).strftime("%y%m%d")
+    for ds, postings in sorted(days.items()):
+        name = canvas_common.session_title(postings) or ""
+        if sent_ds <= ds <= last_ds and re.search(r"\bnegotiation\b", name, re.I) and not re.search(r"\bdebrief\b", name, re.I):
+            return ds, "next negotiation day (role email)"
+    return None
+
+
+def _session_by_title(title: str, body: str, days: dict) -> "tuple[str, str] | None":
     scored = []
     for ds, postings in sorted(days.items()):
         name = canvas_common.session_title(postings) or ""
@@ -188,7 +213,7 @@ def route_item(item: Path, courses: dict, config: dict, cr, dry_run: bool = Fals
                        "or the sender to email_senders, in canvas_config.json)")
     info = courses[abbrev]
     days = _upcoming_days(cr, info["canvas_id"], sent)
-    hit = session_for(subject_title(subject), body, sent, days)
+    hit = session_for(subject_title(subject), body, sent, days, role=bool(ROLE_RE.search(subject)))
     if not hit:
         return False, f"{abbrev}: no class in the next {LOOKAHEAD_DAYS} days matches {subject_title(subject)!r}"
     ds, how = hit
